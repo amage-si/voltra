@@ -5,12 +5,14 @@ import ./policy.bend as P
 import ./commands.bend as C
 import ./quads.bend as Q
 import ./gpu.bend as V
+import ./atlas.bend as At
 import ./shaders/spirv.bend as S
 
 # Native checks of Voltra's Bend-side logic: word handling, device and
 # presentation policies, command encoding and validation, quad packing,
-# quadtree conversion, event decoding and slot tracking. They need no
-# display and no GPU; the GPU path itself is exercised by the examples.
+# quadtree conversion, atlas packing, readback conversion and slot
+# tracking. They need no display and no GPU; the GPU path itself is checked
+# by gpu_tests.bend (offscreen, against CPU references) and the examples.
 
 def check(ok: Bool, message: String) -> IO(Unit):
   match ok:
@@ -90,7 +92,41 @@ def surface_extent(s: P.Surface) -> List<&2, U32>:
   pair_list(P.extent(s, 1000, 9000))
 
 def frame_pass() -> C.Pass:
-  C.Pass{11, 12, 800, 600, 255, 13, 14, 15, 16, 3, 64, 64}
+  C.Pass{11, 12, 800, 600, 255, 13, 14, 15, 16, 3, 64, 64, True{}}
+
+def offscreen_pass() -> C.Pass:
+  C.Pass{11, 12, 800, 600, 255, 13, 14, 15, 16, 3, 64, 64, False{}}
+
+def last_layout(cs: List<&2, C.Cmd>, +found: U32) -> U32:
+  match cs:
+    case Nil{}:
+      found
+    case Con{C.Barrier{i, o, n, ss, ds, sa, da}, rest}:
+      last_layout(rest, n)
+    case Con{c, rest}:
+      last_layout(rest, found)
+
+def entry_words(r: At.Atlas & Maybe<&2, At.Entry>) -> List<&2, U32>:
+  (a, m) = r
+  match m:
+    case None{}:
+      []
+    case Some{At.Entry{k, x, y, w, h}}:
+      [k, x, y, w, h]
+
+def atlas_of(r: At.Atlas & Maybe<&2, At.Entry>) -> At.Atlas:
+  (a, m) = r
+  a
+
+def three() -> At.Atlas:
+  atlas_of(At.place(atlas_of(At.place(atlas_of(At.place(At.new(64, 32), 1, 10, 12)), 2, 20, 12)), 3, 8, 20))
+
+def found_words(m: Maybe<&2, At.Entry>) -> List<&2, U32>:
+  match m:
+    case None{}:
+      []
+    case Some{At.Entry{k, x, y, w, h}}:
+      [k, x, y, w, h]
 
 def upload_layouts(cs: List<&2, C.Cmd>) -> List<&2, U32>:
   match cs:
@@ -107,44 +143,6 @@ def leaf_words(+w: U32, +h: U32) -> List<&2, U32>:
 
 def raster_words(+w: U32, +h: U32) -> List<&2, U32>:
   array_words(U32.to_nat((w * h : U32)), Q.raster(tree(), Array.new(U32, 4n, 0), 0, 0, 4, w, h), 0)
-
-def size_words(m: Maybe<&2, V.Size>) -> List<&2, U32>:
-  match m:
-    case None{}:
-      []
-    case Some{V.Size{w, h}}:
-      [w, h]
-
-def input_kinds(es: List<&2, V.Input>) -> List<&2, U32>:
-  match es:
-    case Nil{}:
-      Nil{}
-    case Con{V.Closed{}, rest}:
-      1 <> input_kinds(rest)
-    case Con{V.Resized{w, h}, rest}:
-      2 <> input_kinds(rest)
-    case Con{V.Exposed{}, rest}:
-      3 <> input_kinds(rest)
-    case Con{V.KeyInput{k, d}, rest}:
-      4 <> input_kinds(rest)
-    case Con{V.ButtonInput{x, y, b, d}, rest}:
-      5 <> input_kinds(rest)
-    case Con{V.MotionInput{x, y}, rest}:
-      6 <> input_kinds(rest)
-    case Con{V.FocusInput{g}, rest}:
-      7 <> input_kinds(rest)
-
-def event_words() -> List<&2, U32>:
-  [2, 640, 480, 0, 0,
-   9, 1, 2, 3, 4,
-   4, 65307, 1, 0, 0,
-   5, 10, 20, 1, 1,
-   2, 800, 600, 0, 0,
-   3, 0, 0, 0, 0,
-   6, 7, 8, 0, 0,
-   7, 1, 0, 0, 0,
-   1, 0, 0, 0, 0,
-   6, 1]
 
 def frame_ids(fs: List<&2, V.Frame>) -> List<&2, U32>:
   match fs:
@@ -174,9 +172,9 @@ def main() -> IO(Unit):
       U32.from_nat(W.depth(3)), U32.from_nat(W.depth(4)), U32.from_nat(W.depth(5)),
       U32.from_nat(W.depth(604800))], [0, 0, 1, 2, 2, 3, 20]), "words: array depth fits n words")
     check(same(pair_words(W.to_array([7, 8, 9])), [3, 7, 8, 9]), "words: list to array keeps count and order")
-    check(same(W.take(S.quad_vert(), 1n), [119734787]) && same(W.take(S.quad_frag(), 1n), [119734787]),
+    check(same(W.take(S.prim_vert(), 1n), [119734787]) && same(W.take(S.prim_frag(), 1n), [119734787]),
       "shaders: embedded SPIR-V starts with the magic number")
-    check(U32.is_gt(W.count(S.quad_vert()), 100) && U32.is_gt(W.count(S.quad_frag()), 50), "shaders: embedded word counts")
+    check(U32.is_gt(W.count(S.prim_vert()), 100) && U32.is_gt(W.count(S.prim_frag()), 500), "shaders: embedded word counts")
     # policy.bend
     check(U32.is_eq(gpu_index(P.best(P.gpus(gpu_words()))), 1), "policy: prefers a discrete Vulkan 1.3+ GPU")
     check(U32.is_eq(gpu_index(P.best(P.gpus([1, 2, 4318, 7, 4202496, 1, 16384, 8192]))), 99),
@@ -214,30 +212,58 @@ def main() -> IO(Unit):
     check(Bool.not(C.valid([C.Render{1, 8, 8, 1, 0}, C.Copy{1, 2, 3, 4, 0}, C.EndRender{}])),
       "commands: copy inside a render scope is rejected")
     check(Bool.not(C.valid([C.Render{1, 0, 8, 1, 0}, C.EndRender{}])), "commands: empty render area is rejected")
-    check(Bool.not(C.valid([C.Render{1, 8, 8, 1, 0}, C.Push{1, 1, W.take(S.quad_vert(), 33n)}, C.EndRender{}])),
+    check(Bool.not(C.valid([C.Render{1, 8, 8, 1, 0}, C.Push{1, 1, W.take(S.prim_vert(), 33n)}, C.EndRender{}])),
       "commands: more than 32 push words is rejected")
     check(same(upload_layouts(C.upload(5, 6, 8, 8)), [0, 7, 7, 5, 5, 5, 5]),
       "commands: upload goes UNDEFINED -> TRANSFER_DST -> SHADER_READ")
     # quads.bend
-    check(same(Q.pack([Q.fill(1, 2, 3, 4, 5)]), [1, 2, 3, 4, 0, 0, 0, 0, 5, 0]), "quads: flat quad words")
-    check(same(Q.pack([Q.image(1, 2, 3, 4, 5, 6, 7, 8, 9)]), [1, 2, 3, 4, 5, 6, 7, 8, 9, 1]), "quads: textured quad words")
+    check(same(Q.pack([Q.fill(1, 2, 3, 4, 5)]), [1, 2, 3, 4, 2147483648, 2147483648, 2147483647, 2147483647,
+      5, 0, 0, 0, 0, 0, 0, 0]), "quads: flat quad words, unclipped")
+    check(same(Q.pack([Q.image(1, 2, 3, 4, 5, 6, 7, 8, 9)]), [1, 2, 3, 4, 2147483648, 2147483648, 2147483647,
+      2147483647, 9, 1, 0, 0, 5, 6, 7, 8]), "quads: textured quad words")
+    check(same(W.drop(Q.pack([Q.mask(1, 2, 3, 4, 5, 6, 7)]), 8n), [7, 2, 0, 0, 5, 6, 3, 4]), "quads: coverage quad words")
+    check(same(W.take(W.drop(Q.pack([Q.clipped(Q.fill(0, 0, 9, 9, 1), 2, 3, 4, 5)]), 4n), 4n), [2, 3, 4, 5]),
+      "quads: clip box")
+    check(same(W.take(Q.pack([Q.rounded(4294967284, 9, 17, 24, 4, 1)]), 4n), [4294967294, 1, 5, 2]),
+      "quads: rounded box covers its pixels, also left of the origin")
+    check(same(W.drop(Q.pack([Q.ring(0, 0, 80, 40, 16, 8, 1)]), 8n), [1, 4, 16, 8, 0, 0, 80, 40]),
+      "quads: ring words")
+    check(U32.is_eq(Q.floor8(4294967295), 4294967295) && U32.is_eq(Q.ceil8(4294967295), 0) &&
+      U32.is_eq(Q.floor8(15), 1) && U32.is_eq(Q.ceil8(15), 2) && U32.is_eq(Q.ceil8(16), 2), "quads: signed eighths")
     check(U32.is_eq(Q.opaque(1122867), 287454207), "quads: RGB leaf to opaque RGBA8")
     check(U32.is_eq(Q.span(2, 4, 5), 3) && U32.is_eq(Q.span(6, 4, 5), 0), "quads: span clips to the surface")
     check(U32.is_eq(Q.side(960, 630), 1024) && U32.is_eq(Q.side(1, 1), 1), "quads: quadtree side")
-    check(U32.is_eq((W.count(leaf_words(4, 4)) / 10 : U32), 7), "quads: one quad per visible leaf")
-    check(same(W.take(leaf_words(4, 4), 10n), [0, 0, 2, 2, 0, 0, 0, 0, 4278190335, 0]), "quads: leaf geometry and color")
-    check(U32.is_eq((W.count(leaf_words(3, 1)) / 10 : U32), 2), "quads: leaves outside the surface are dropped")
+    check(U32.is_eq((W.count(leaf_words(4, 4)) / 16 : U32), 7), "quads: one quad per visible leaf")
+    check(same(W.take(leaf_words(4, 4), 9n), [0, 0, 2, 2, 2147483648, 2147483648, 2147483647, 2147483647,
+      4278190335]), "quads: leaf geometry and color")
+    check(U32.is_eq((W.count(leaf_words(3, 1)) / 16 : U32), 2), "quads: leaves outside the surface are dropped")
     check(same(raster_words(4, 2), [4278190335, 4278190335, 65535, 65535, 4278190335, 4278190335, 16711935, 65535]),
       "quads: raster of a quadtree, row-major RGBA8")
     check(same(raster_words(3, 1), [4278190335, 4278190335, 65535]), "quads: raster clips to width")
+    # commands.bend (textures and readback)
+    check(U32.is_eq(last_layout(C.frame(offscreen_pass()), 0), 6) && U32.is_eq(last_layout(C.frame(frame_pass()), 0), 1000001002),
+      "commands: offscreen frames end ready for readback, swapchain frames for present")
+    check(C.valid(C.patch(1, 2, [C.Patch{0, 0, 4, 4, 0}, C.Patch{4, 0, 2, 2, 64}])), "commands: a patch is valid")
+    check(same(W.drop(C.encode(C.patch(1, 2, [C.Patch{3, 4, 5, 6, 64}])), 8n), [12, 2, 1, 3, 4, 5, 6, 64, 1, 1, 7, 5, 4096, 128, 4096, 32]),
+      "commands: a patch keeps the texture and copies a region")
+    check(Bool.not(C.valid(C.patch(1, 2, [C.Patch{0, 0, 0, 4, 0}]))), "commands: an empty region is rejected")
+    check(C.valid(C.readback(1, 2, 8, 8)) && same(C.encode(C.readback(1, 2, 8, 8)), [13, 1, 2, 8, 8, 0, 14, 4096, 16384, 4096, 8192]),
+      "commands: readback copies, then makes the bytes visible to the host")
+    check(same(W.take(C.encode(C.texture_init(9)), 3n), [1, 9, 0]) && U32.is_eq(last_layout(C.texture_init(9), 0), 5),
+      "commands: a blank texture starts readable")
+    # atlas.bend
+    check(same(entry_words(At.place(At.new(64, 32), 7, 10, 12)), [7, 0, 0, 10, 12]), "atlas: first entry at the origin")
+    check(same(found_words(At.lookup(three(), 2)), [2, 10, 0, 20, 12]), "atlas: same-height entry shares the shelf")
+    check(same(found_words(At.lookup(three(), 3)), [3, 0, 12, 8, 20]), "atlas: a taller entry opens a new shelf")
+    check(same(entry_words(At.place(three(), 4, 64, 1)), []), "atlas: full atlas refuses an entry")
+    check(U32.is_eq(At.count(three()), 3) && U32.is_eq(At.count(At.reset(three())), 0), "atlas: count and reset")
     # gpu.bend (pure parts)
-    check(same(input_kinds(V.events(event_words())), [2, 4, 5, 2, 3, 6, 7, 1]),
-      "events: decoded in order, unknown kinds and partial words dropped")
-    check(V.closed(V.events(event_words())) && Bool.not(V.closed(V.events([2, 1, 1, 0, 0]))), "events: close detection")
-    check(same(size_words(V.resized(V.events(event_words()), None{})), [800, 600]), "events: last size wins")
-    check(V.exposed(V.events(event_words())), "events: expose detection")
+    check(U32.is_eq(V.bgra_to_rgba(4278255360), 16711935) && U32.is_eq(V.bgra_to_rgba(4286513152), 2130706687),
+      "readback: B,G,R,A bytes to 0xRRGGBBAA")
+    check(maybe_is(P.graphics([4, 1, 0, 3, 1, 0]), 1) && Maybe.is_none(&2, U32, P.graphics([2, 1, 0])),
+      "policy: offscreen needs only a graphics family")
     check(same(V.forget([9, 7, 5], 7), [9, 5]) && same(V.forget([9], 4), [9]), "slots: forget removes only that slot")
     check(same(frame_ids(V.rotate(frames3())), [2, 3, 1]), "frames: rotation after a present")
     check(desc_ok(V.pipeline_desc(44)), "pipeline: description has the bridge's exact length")
     check(same(V.rgba_view(37), [37, 6, 5, 4, 3, 1]), "texture: 0xRRGGBBAA words read through an A,B,G,R swizzle")
-    IO.print("57 Voltra checks passed (Bend-side logic; the GPU path is verified by the examples)")
+    IO.print("71 Voltra checks passed (Bend-side logic; the GPU path is checked by gpu_tests.bend and the examples)")

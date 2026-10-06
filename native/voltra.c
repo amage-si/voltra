@@ -4,32 +4,34 @@
 // The only hand-written native code in Voltra. Bend splices this file into
 // the generated C program after its runtime (see `bend guide effects`), so
 // every runtime helper (Term, Env, io_done, io_fail, io_node, ...) is in
-// scope. It is not a renderer: each effect below is one Xlib or Vulkan call,
-// or a fixed, field-by-field translation of Bend words into one Vulkan
+// scope. It is not a renderer: each effect below is one Vulkan call, or a
+// fixed, field-by-field translation of Bend words into one Vulkan
 // create-info struct. Every decision -- which GPU, queue, format, present
 // mode, memory type, image count, barrier, layout, command order, frame
 // pacing, resize policy and destruction order -- is made by the Bend caller.
 //
+// Voltra opens no window. The presentation surface is made from the native
+// window that Ankra (the platform layer) hands over as words: the Xlib
+// Display* and the X window id. The display stays Ankra's; it must outlive
+// the surface.
+//
 // Objects cross into Bend as U32 slot ids into the table below. Bend owns
-// their lifetimes (registry.bend); the bridge only checks that a slot is
-// alive and of the expected kind, so a stale id fails instead of crashing.
+// their lifetimes (gpu.bend); the bridge only checks that a slot is alive
+// and of the expected kind, so a stale id fails instead of crashing.
 //
 // Vulkan is reached through `dlopen("libvulkan.so.1")` and
 // vkGetInstanceProcAddr, so the build needs no Vulkan headers or link flags.
 // The few Vulkan declarations this file uses are written out below and are
-// checked against the official Khronos headers by native/abi_check.sh.
-// Including <X11/Xlib.h> makes `bend` link libX11 (the same rule as the
-// official Window effect).
+// checked against the official Khronos headers by native/abi_check.py.
+// <X11/Xlib.h> provides the Display and Window types of the Xlib surface.
 //
 // Failures answer `Fail{(code, text)}`: code is -VkResult for a Vulkan error,
 // 22 (EINVAL) for a bad slot or argument, 95 (ENOTSUP) for a missing loader
-// or display, 24 (EMFILE) when the slot table is full.
+// or an unsupported native window kind, 24 (EMFILE) when the slot table is
+// full.
 
 #include <dlfcn.h>
-#include <poll.h>
 #include <X11/Xlib.h>
-#include <X11/Xutil.h>
-#include <X11/Xatom.h>
 
 // Vulkan declarations (subset of vulkan_core.h / vulkan_xlib.h, 64-bit)
 // -------------------------------------------------------------------
@@ -361,6 +363,10 @@ typedef struct {
 } VkImageMemoryBarrier;
 
 typedef struct {
+  VkEnum sType; const void* pNext; VkFlags srcAccessMask, dstAccessMask;
+} VkMemoryBarrier;
+
+typedef struct {
   VkFlags aspectMask; uint32_t mipLevel, baseArrayLayer, layerCount;
 } VkImageSubresourceLayers;
 
@@ -509,7 +515,9 @@ typedef struct {
   X(void, vkCmdDraw, (VkCommandBuffer, uint32_t, uint32_t, uint32_t, \
     uint32_t)) \
   X(void, vkCmdCopyBufferToImage, (VkCommandBuffer, VkHandle, VkHandle, \
-    VkEnum, uint32_t, const VkBufferImageCopy*))
+    VkEnum, uint32_t, const VkBufferImageCopy*)) \
+  X(void, vkCmdCopyImageToBuffer, (VkCommandBuffer, VkHandle, VkEnum, \
+    VkHandle, uint32_t, const VkBufferImageCopy*))
 
 #define VX_DECL(r, n, a) static r (*n) a;
 VX_FNS(VX_DECL)
@@ -523,7 +531,7 @@ static VkResult (*vx_layers)(uint32_t*, VkLayerProperties*);
 // -----
 
 enum {
-  VX_FREE, VX_WINDOW, VX_INSTANCE, VX_SURFACE, VX_DEVICE, VX_SWAPCHAIN,
+  VX_FREE, VX_INSTANCE, VX_SURFACE, VX_DEVICE, VX_SWAPCHAIN,
   VX_SWAP_IMAGE, VX_IMAGE, VX_VIEW, VX_BUFFER, VX_MEMORY, VX_SAMPLER,
   VX_SET_LAYOUT, VX_POOL, VX_SET, VX_SHADER, VX_LAYOUT, VX_PIPELINE,
   VX_CMD_POOL, VX_CMD, VX_SEMAPHORE, VX_FENCE
@@ -531,9 +539,9 @@ enum {
 
 typedef struct {
   u32      kind;
-  u32      dev;   // owning device (or instance/window) slot
-  u64      h;     // the handle (or Display* for a window)
-  u64      x;     // second word: Window id, VkQueue, VkPhysicalDevice...
+  u32      dev;   // owning device (or instance) slot
+  u64      h;     // the handle
+  u64      x;     // second word: VkQueue for a device
   u64      size;  // memory size; device: queue family
   void*    map;   // persistent host mapping of a memory slot
 } VxSlot;
@@ -625,167 +633,6 @@ static u32* vx_array(Env e, Term a, u64* n) {
   *n = 1ull << blk_cls(a);
   return (u32*)(e.mem + blk_loc(e.mem, a));
 }
-
-// Window (Xlib)
-// -------------
-
-#ifdef CID(window_open)
-
-// flags bit 0: fixed size (min = max size hints, as the official Window).
-Term vx_window_open_run(Env e, Term* f, IoWork* w) {
-  u64 n = 0;
-  char* title = io_cstr(e, f[0], &n);
-  u32 width = (u32)f[1];
-  u32 height = (u32)f[2];
-  u32 flags = (u32)f[3];
-  if (width < 1 || height < 1 || width > 16384 || height > 16384) {
-    free(title);
-    return VX_BAD(e, "window size");
-  }
-  Display* dpy = XOpenDisplay(NULL);
-  if (dpy == NULL) {
-    free(title);
-    return io_fail(e, 95, "Voltra: no X11 display (DISPLAY unset?)");
-  }
-  int scr = DefaultScreen(dpy);
-  Window win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 0, 0, width,
-    height, 0, 0, BlackPixel(dpy, scr));
-  // No background: the X server never clears over GPU frames on resize.
-  XSetWindowBackgroundPixmap(dpy, win, None);
-  Atom del = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
-  XSetWMProtocols(dpy, win, &del, 1);
-  XStoreName(dpy, win, title);
-  XChangeProperty(dpy, win, XInternAtom(dpy, "_NET_WM_NAME", False),
-    XInternAtom(dpy, "UTF8_STRING", False), 8, PropModeReplace,
-    (unsigned char*)title, (int)n);
-  if (flags & 1) {
-    XSizeHints hints = { .flags = PMinSize | PMaxSize, .min_width = width,
-      .min_height = height, .max_width = width, .max_height = height };
-    XSetWMNormalHints(dpy, win, &hints);
-  }
-  XClassHint cls = { "voltra", "Voltra" };
-  XSetClassHint(dpy, win, &cls);
-  XSelectInput(dpy, win, StructureNotifyMask | ExposureMask | KeyPressMask
-    | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask
-    | FocusChangeMask);
-  XMapWindow(dpy, win);
-  XFlush(dpy);
-  free(title);
-  u32 id = vx_new(VX_WINDOW, 0, (u64)(intptr_t)dpy, (u64)win);
-  if (id == 0) {
-    XDestroyWindow(dpy, win);
-    XCloseDisplay(dpy);
-    return io_fail(e, 24, "Voltra: slot table full");
-  }
-  return io_done(e, (Term)id);
-}
-
-static void __attribute__((constructor)) vx_window_open_use(void) {
-  io_eff(CID(window_open), vx_window_open_run, 0);
-}
-
-#endif
-
-#ifdef CID(window_wait)
-
-// Events as five words each: kind, a, b, c, d.
-// 1 close; 2 configure w h; 3 expose; 4 key keysym down;
-// 5 button x y button down; 6 motion x y; 7 focus in.
-static Term vx_events(Env e, VxSlot* s) {
-  Display* dpy = (Display*)(intptr_t)s->h;
-  u32 cap = 0, n = 0;
-  u32* evs = NULL;
-  while (XPending(dpy) > 0) {
-    XEvent ev;
-    XNextEvent(dpy, &ev);
-    u32 k[5] = { 0, 0, 0, 0, 0 };
-    if (ev.type == ClientMessage) {
-      k[0] = 1;
-    } else if (ev.type == ConfigureNotify) {
-      k[0] = 2; k[1] = (u32)ev.xconfigure.width; k[2] = (u32)ev.xconfigure.height;
-    } else if (ev.type == Expose && ev.xexpose.count == 0) {
-      k[0] = 3;
-    } else if (ev.type == KeyPress || ev.type == KeyRelease) {
-      k[0] = 4; k[1] = (u32)XLookupKeysym(&ev.xkey, 0);
-      k[2] = ev.type == KeyPress;
-    } else if (ev.type == ButtonPress || ev.type == ButtonRelease) {
-      k[0] = 5; k[1] = (u32)ev.xbutton.x; k[2] = (u32)ev.xbutton.y;
-      k[3] = ev.xbutton.button; k[4] = ev.type == ButtonPress;
-    } else if (ev.type == MotionNotify) {
-      k[0] = 6; k[1] = (u32)ev.xmotion.x; k[2] = (u32)ev.xmotion.y;
-    } else if (ev.type == FocusIn || ev.type == FocusOut) {
-      k[0] = 7; k[1] = ev.type == FocusIn;
-    }
-    if (k[0] == 0) {
-      continue;
-    }
-    if (n + 5 > cap) {
-      cap = cap == 0 ? 80 : cap * 2;
-      evs = io_mem(realloc(evs, cap * sizeof(u32)));
-    }
-    memcpy(evs + n, k, sizeof k);
-    n += 5;
-  }
-  Term list = vx_list(e, evs, n);
-  free(evs);
-  return list;
-}
-
-static Term vx_window_wait_more(Env e, IoWork* w) {
-  VxSlot* s = vx_get((u32)w->hand, VX_WINDOW);
-  return s == NULL ? VX_BAD(e, "window") : io_done(e, vx_events(e, s));
-}
-
-// Parks on the X connection until an event arrives or `ms` pass
-// (0 polls, 0xFFFFFFFF waits without a deadline). No busy loop.
-Term vx_window_wait_run(Env e, Term* f, IoWork* w) {
-  u32 id = (u32)f[0];
-  u32 ms = (u32)f[1];
-  VxSlot* s = vx_get(id, VX_WINDOW);
-  if (s == NULL) {
-    return VX_BAD(e, "window");
-  }
-  Display* dpy = (Display*)(intptr_t)s->h;
-  if (ms == 0 || XPending(dpy) > 0) {
-    return io_done(e, vx_events(e, s));
-  }
-  w->hand = (intptr_t)id;
-  u64 due = ms == 0xFFFFFFFFu ? 0 : io_tick() + (u64)ms * 1000000ull;
-  return io_wait_on(w, ConnectionNumber(dpy), POLLIN, due,
-    vx_window_wait_more);
-}
-
-static void __attribute__((constructor)) vx_window_wait_use(void) {
-  io_eff(CID(window_wait), vx_window_wait_run, 0);
-}
-
-#endif
-
-#ifdef CID(window_title)
-
-Term vx_window_title_run(Env e, Term* f, IoWork* w) {
-  u64 n = 0;
-  char* title = io_cstr(e, f[1], &n);
-  VxSlot* s = vx_get((u32)f[0], VX_WINDOW);
-  if (s == NULL) {
-    free(title);
-    return VX_BAD(e, "window");
-  }
-  Display* dpy = (Display*)(intptr_t)s->h;
-  XStoreName(dpy, (Window)s->x, title);
-  XChangeProperty(dpy, (Window)s->x, XInternAtom(dpy, "_NET_WM_NAME", False),
-    XInternAtom(dpy, "UTF8_STRING", False), 8, PropModeReplace,
-    (unsigned char*)title, (int)n);
-  XFlush(dpy);
-  free(title);
-  return io_done(e, term_pak(CID(Unit), 0));
-}
-
-static void __attribute__((constructor)) vx_window_title_use(void) {
-  io_eff(CID(window_title), vx_window_title_run, 0);
-}
-
-#endif
 
 // Vulkan: instance and devices
 // ----------------------------
@@ -923,14 +770,25 @@ static void __attribute__((constructor)) vx_vk_gpu_name_use(void) {
 
 #ifdef CID(vk_surface)
 
+// A presentation surface for a native window handed over by the platform
+// layer as words: [kind, Display* high word, Display* low word, window id,
+// screen]. Kind 1 is Xlib (vkCreateXlibSurfaceKHR); other kinds answer
+// ENOTSUP. The display is borrowed: Voltra never closes it.
 Term vx_vk_surface_run(Env e, Term* f, IoWork* w) {
+  u32 k[5];
+  u32 n = vx_words(e, f[1], k, 5);
   VxSlot* s = vx_get((u32)f[0], VX_INSTANCE);
-  VxSlot* win = vx_get((u32)f[1], VX_WINDOW);
-  if (s == NULL || win == NULL) {
-    return VX_BAD(e, "instance or window");
+  if (s == NULL || n != 5) {
+    return VX_BAD(e, "instance or native window");
   }
-  VkXlibSurfaceCreateInfoKHR ci = { 1000004000, NULL, 0,
-    (Display*)(intptr_t)win->h, (Window)win->x };
+  if (k[0] != 1) {
+    return io_fail(e, 95, "Voltra: unsupported native window kind");
+  }
+  Display* dpy = (Display*)(uintptr_t)(((u64)k[1] << 32) | k[2]);
+  if (dpy == NULL || k[3] == 0) {
+    return VX_BAD(e, "Xlib display or window");
+  }
+  VkXlibSurfaceCreateInfoKHR ci = { 1000004000, NULL, 0, dpy, (Window)k[3] };
   VkHandle surf;
   VX_TRY(e, vkCreateXlibSurfaceKHR((VkInstance)(intptr_t)s->h, &ci, NULL,
     &surf), "vkCreateXlibSurfaceKHR");
@@ -1351,6 +1209,35 @@ static void __attribute__((constructor)) vx_vk_write_use(void) {
 
 #endif
 
+#ifdef CID(vk_read)
+
+// Copies `count` words from mapped memory at a byte offset into a Bend
+// Array<U32>, in place, then hands the array back: the read side of
+// vk_write, for readbacks. Bend made the device writes visible to the host
+// (a HOST_READ barrier, then a fence wait) before calling it.
+Term vx_vk_read_run(Env e, Term* f, IoWork* w) {
+  VxSlot* m = vx_get((u32)f[0], VX_MEMORY);
+  u64 offset = (u32)f[1];
+  u64 cap = 0;
+  u32* dst = vx_array(e, f[2], &cap);
+  u64 count = (u32)f[3];
+  Term r;
+  if (m == NULL || m->map == NULL || count > cap
+    || offset + count * 4 > m->size) {
+    r = VX_BAD(e, "read: memory unmapped or range out of bounds");
+  } else {
+    memcpy(dst, (char*)m->map + offset, count * 4);
+    r = io_done(e, term_pak(CID(Unit), 0));
+  }
+  return io_tup(e, f[2], r);
+}
+
+static void __attribute__((constructor)) vx_vk_read_use(void) {
+  io_eff(CID(vk_read), vx_vk_read_run, 0);
+}
+
+#endif
+
 #ifdef CID(vk_image_view)
 
 // desc: [format, swizzleR, swizzleG, swizzleB, swizzleA, aspect].
@@ -1681,7 +1568,10 @@ static void __attribute__((constructor)) vx_vk_command_buffer_use(void) {
 //  9 vertices  binding buffer offset
 // 10 draw      vertexCount instanceCount firstVertex firstInstance
 // 11 copy      buffer image width height bufferOffset
-static const u8 vx_arity[12] = { 0, 7, 5, 0, 4, 4, 1, 2, 3, 3, 4, 5 };
+// 12 region    buffer image x y width height bufferOffset
+// 13 readback  image buffer width height bufferOffset
+// 14 memory    srcStage dstStage srcAccess dstAccess
+static const u8 vx_arity[15] = { 0, 7, 5, 0, 4, 4, 1, 2, 3, 3, 4, 5, 7, 5, 4 };
 
 static Term vx_record(Env e, u32 dev, VkCommandBuffer cb, const u32* k,
   u64 n) {
@@ -1690,7 +1580,7 @@ static Term vx_record(Env e, u32 dev, VkCommandBuffer cb, const u32* k,
   VX_TRY(e, vkBeginCommandBuffer(cb, &bi), "vkBeginCommandBuffer");
   for (u64 i = 0; i < n;) {
     u32 op = k[i];
-    if (op == 0 || op > 11 || i + 1 + vx_arity[op] > n) {
+    if (op == 0 || op > 14 || i + 1 + vx_arity[op] > n) {
       return VX_BAD(e, "command word");
     }
     const u32* a = k + i + 1;
@@ -1762,6 +1652,27 @@ static Term vx_record(Env e, u32 dev, VkCommandBuffer cb, const u32* k,
       VkBufferImageCopy c = { a[4], 0, 0, { 1, 0, 0, 1 }, { 0, 0, 0 },
         { a[2], a[3], 1 } };
       vkCmdCopyBufferToImage(cb, b->h, img->h, 7, 1, &c);
+    } else if (op == 12) {
+      VxSlot* b = vx_get(a[0], VX_BUFFER);
+      VxSlot* img = vx_get(a[1], VX_IMAGE);
+      if (b == NULL || img == NULL) {
+        return VX_BAD(e, "region copy operands");
+      }
+      VkBufferImageCopy c = { a[6], 0, 0, { 1, 0, 0, 1 },
+        { (int32_t)a[2], (int32_t)a[3], 0 }, { a[4], a[5], 1 } };
+      vkCmdCopyBufferToImage(cb, b->h, img->h, 7, 1, &c);
+    } else if (op == 13) {
+      VxSlot* img = vx_image(a[0]);
+      VxSlot* b = vx_get(a[1], VX_BUFFER);
+      if (img == NULL || b == NULL) {
+        return VX_BAD(e, "readback operands");
+      }
+      VkBufferImageCopy c = { a[4], 0, 0, { 1, 0, 0, 1 }, { 0, 0, 0 },
+        { a[2], a[3], 1 } };
+      vkCmdCopyImageToBuffer(cb, img->h, 6, b->h, 1, &c);
+    } else if (op == 14) {
+      VkMemoryBarrier m = { 46, NULL, a[2], a[3] };
+      vkCmdPipelineBarrier(cb, a[0], a[1], 0, 1, &m, 0, NULL, 0, NULL);
     }
   }
   VX_TRY(e, vkEndCommandBuffer(cb), "vkEndCommandBuffer");
@@ -1901,7 +1812,8 @@ static void __attribute__((constructor)) vx_vk_idle_use(void) {
 #ifdef CID(destroy)
 
 // Destroys the object in a slot and frees the slot. Order is the caller's
-// responsibility (children before their device, device before instance).
+// responsibility (children before their device, device before instance,
+// surfaces before the window that Ankra closes).
 Term vx_destroy_run(Env e, Term* f, IoWork* w) {
   u32 id = (u32)f[0];
   if (id == 0 || id >= VX_SLOTS || vx_slot[id].kind == VX_FREE) {
@@ -1913,10 +1825,6 @@ Term vx_destroy_run(Env e, Term* f, IoWork* w) {
   VkInstance inst = s->dev != 0 && vx_slot[s->dev].kind == VX_INSTANCE
     ? (VkInstance)(intptr_t)vx_slot[s->dev].h : NULL;
   switch (s->kind) {
-    case VX_WINDOW:
-      XDestroyWindow((Display*)(intptr_t)s->h, (Window)s->x);
-      XCloseDisplay((Display*)(intptr_t)s->h);
-      break;
     case VX_INSTANCE:
       if (vx_messenger != 0) {
         vkDestroyDebugUtilsMessengerEXT((VkInstance)(intptr_t)s->h,

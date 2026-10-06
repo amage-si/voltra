@@ -3,8 +3,8 @@
 //
 // Bend requires a JS file beside every effect's C file; it serves
 // `bend file.bend` (checked and run in JS) and `-o file.js`. Voltra talks to
-// Vulkan and Xlib, which the JS lane cannot reach, so every effect answers
-// Fail with ENOTSUP (95). Effects that borrow an array hand it back first.
+// Vulkan, which the JS lane cannot reach, so every effect answers Fail with
+// ENOTSUP (95). Effects that borrow an array hand it back first.
 
 function voltra_unsupported() {
   return io_fail(95);
@@ -15,7 +15,6 @@ function voltra_unsupported_with(array) {
 }
 
 for (const id of [
-  CID(window_open), CID(window_wait), CID(window_title),
   CID(vk_instance), CID(vk_gpus), CID(vk_gpu_name),
   CID(vk_surface), CID(vk_queue_families),
   CID(vk_device), CID(vk_memory_types),
@@ -36,6 +35,8 @@ for (const id of [
 }
 
 io_eff(CID(vk_write), (memory, offset, array) =>
+  voltra_unsupported_with(array));
+io_eff(CID(vk_read), (memory, offset, array) =>
   voltra_unsupported_with(array));
 io_eff(CID(vk_shader), (device, array) =>
   voltra_unsupported_with(array));

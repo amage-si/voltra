@@ -36,16 +36,19 @@ def present_fifo() -> U32: 2
 def present_fifo_relaxed() -> U32: 3
 
 # VkImageUsageFlags, VkBufferUsageFlags
+def image_transfer_src() -> U32: 1
 def image_transfer_dst() -> U32: 2
 def image_sampled() -> U32: 4
 def image_color_attachment() -> U32: 16
 def buffer_transfer_src() -> U32: 1
+def buffer_transfer_dst() -> U32: 2
 def buffer_vertex() -> U32: 128
 
 # VkImageLayout
 def layout_undefined() -> U32: 0
 def layout_color_attachment() -> U32: 2
 def layout_shader_read() -> U32: 5
+def layout_transfer_src() -> U32: 6
 def layout_transfer_dst() -> U32: 7
 def layout_present() -> U32: 1000001002
 
@@ -56,12 +59,15 @@ def stage_fragment_shader() -> U32: 128
 def stage_color_output() -> U32: 1024
 def stage_transfer() -> U32: 4096
 def stage_bottom() -> U32: 8192
+def stage_host() -> U32: 16384
 
 # VkAccessFlags
 def access_none() -> U32: 0
 def access_shader_read() -> U32: 32
 def access_color_write() -> U32: 256
+def access_transfer_read() -> U32: 2048
 def access_transfer_write() -> U32: 4096
+def access_host_read() -> U32: 8192
 
 # VkComponentSwizzle, VkImageAspectFlags, VkFilter, VkSamplerAddressMode
 def swizzle_identity() -> U32: 0

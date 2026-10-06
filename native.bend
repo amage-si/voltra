@@ -1,27 +1,12 @@
 import Base
 
-# The native bridge: one Bend effect per thin Xlib/Vulkan call, implemented
-# in native/voltra.c (native builds) and native/voltra.js (JS lane, always
-# ENOTSUP). Objects are U32 slot ids; 0 means "none". Word layouts are
-# documented beside each effect in native/voltra.c and in docs/bridge.md.
-# Prefer the typed API in gpu.bend; these are the raw calls it composes.
-
-# Window (Xlib, owned by Voltra because the official Window hides its handle)
-
-def window_open(title: String, width: U32, height: U32, flags: U32) ->
-  IO(Result<&1, &1, U32 & String, U32>):
-  import "./native/voltra.c"
-  import "./native/voltra.js"
-
-def window_wait(window: U32, ms: U32) ->
-  IO(Result<&1, &1, U32 & String, List<&2, U32>>):
-  import "./native/voltra.c"
-  import "./native/voltra.js"
-
-def window_title(window: U32, title: String) ->
-  IO(Result<&1, &1, U32 & String, Unit>):
-  import "./native/voltra.c"
-  import "./native/voltra.js"
+# The native bridge: one Bend effect per thin Vulkan call, implemented in
+# native/voltra.c (native builds) and native/voltra.js (JS lane, always
+# ENOTSUP). Voltra opens no window: surfaces are made from the native
+# window words that Ankra hands over (see vk_surface). Objects are U32 slot
+# ids; 0 means "none". Word layouts are documented beside each effect in
+# native/voltra.c and in docs/bridge.md. Prefer the typed API in gpu.bend;
+# these are the raw calls it composes.
 
 # Instance, GPUs and devices
 
@@ -40,7 +25,9 @@ def vk_gpu_name(instance: U32, gpu: U32) ->
   import "./native/voltra.c"
   import "./native/voltra.js"
 
-def vk_surface(instance: U32, window: U32) ->
+# native: [kind (1 = Xlib), Display* high word, Display* low word, window
+# id, screen], as Ankra's `native` answers.
+def vk_surface(instance: U32, native: List<&2, U32>) ->
   IO(Result<&1, &1, U32 & String, U32>):
   import "./native/voltra.c"
   import "./native/voltra.js"
@@ -115,6 +102,11 @@ def vk_map(device: U32, memory: U32) ->
   import "./native/voltra.js"
 
 def vk_write(memory: U32, offset: U32, data: Array<U32>, count: U32) ->
+  IO(Array<U32> & Result<&1, &1, U32 & String, Unit>):
+  import "./native/voltra.c"
+  import "./native/voltra.js"
+
+def vk_read(memory: U32, offset: U32, data: Array<U32>, count: U32) ->
   IO(Array<U32> & Result<&1, &1, U32 & String, Unit>):
   import "./native/voltra.c"
   import "./native/voltra.js"

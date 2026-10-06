@@ -20,6 +20,9 @@ type Cmd is Data:
   Vertices{binding: U32, buffer: U32, offset: U32}
   Draw{vertices: U32, instances: U32, first_vertex: U32, first_instance: U32}
   Copy{buffer: U32, image: U32, width: U32, height: U32, offset: U32}
+  Region{buffer: U32, image: U32, x: U32, y: U32, width: U32, height: U32, offset: U32}
+  Readback{image: U32, buffer: U32, width: U32, height: U32, offset: U32}
+  Memory{src_stage: U32, dst_stage: U32, src_access: U32, dst_access: U32}
 
 def op(c: Cmd, rest: List<&2, U32>) -> List<&2, U32>:
   match c:
@@ -45,6 +48,12 @@ def op(c: Cmd, rest: List<&2, U32>) -> List<&2, U32>:
       10 <> v <> i <> fv <> fi <> rest
     case Copy{b, i, w, h, off}:
       11 <> b <> i <> w <> h <> off <> rest
+    case Region{b, i, x, y, w, h, off}:
+      12 <> b <> i <> x <> y <> w <> h <> off <> rest
+    case Readback{i, b, w, h, off}:
+      13 <> i <> b <> w <> h <> off <> rest
+    case Memory{ss, ds, sa, da}:
+      14 <> ss <> ds <> sa <> da <> rest
 
 def encode(cs: List<&2, Cmd>) -> List<&2, U32>:
   match cs:
@@ -54,7 +63,8 @@ def encode(cs: List<&2, Cmd>) -> List<&2, U32>:
       op(c, encode(rest))
 
 # Structural rules: draws and dynamic state only inside a render scope,
-# barriers and copies only outside, scopes not nested and always closed,
+# barriers and copies only outside (region copies not empty), scopes not
+# nested and always closed,
 # at most 32 push-constant words, a pipeline bound before drawing.
 def valid.go(cs: List<&2, Cmd>, inside: Bool, +bound: Bool) -> Bool:
   match cs inside:
@@ -67,6 +77,12 @@ def valid.go(cs: List<&2, Cmd>, inside: Bool, +bound: Bool) -> Bool:
     case Con{Barrier{i, o, n, ss, ds, sa, da}, rest} False{}:
       valid.go(rest, False{}, bound)
     case Con{Copy{b, i, w, h, off}, rest} False{}:
+      valid.go(rest, False{}, bound)
+    case Con{Region{b, i, x, y, w, h, off}, rest} False{}:
+      U32.is_gt(w, 0) && U32.is_gt(h, 0) && valid.go(rest, False{}, bound)
+    case Con{Readback{i, b, w, h, off}, rest} False{}:
+      valid.go(rest, False{}, bound)
+    case Con{Memory{ss, ds, sa, da}, rest} False{}:
       valid.go(rest, False{}, bound)
     case Con{Pipeline{p}, rest} True{}:
       valid.go(rest, True{}, True{})
@@ -101,6 +117,55 @@ def to_present(image: U32) -> Cmd:
     Vk.stage_color_output(), Vk.stage_bottom(), Vk.access_color_write(),
     Vk.access_none()}
 
+# An offscreen target ends its frame ready to be copied out.
+def to_readback(image: U32) -> Cmd:
+  Barrier{image, Vk.layout_color_attachment(), Vk.layout_transfer_src(),
+    Vk.stage_color_output(), Vk.stage_transfer(), Vk.access_color_write(),
+    Vk.access_transfer_read()}
+
+def finish(present: Bool, image: U32) -> Cmd:
+  match present:
+    case True{}:
+      to_present(image)
+    case False{}:
+      to_readback(image)
+
+# A texture's first layout: readable by fragment shaders, contents
+# undefined until a region is uploaded.
+def texture_init(image: U32) -> List<&2, Cmd>:
+  [Barrier{image, Vk.layout_undefined(), Vk.layout_shader_read(),
+     Vk.stage_top(), Vk.stage_fragment_shader(), Vk.access_none(),
+     Vk.access_shader_read()}]
+
+type Patch is Data:
+  Patch{x: U32, y: U32, width: U32, height: U32, offset: U32}
+
+def regions(+image: U32, +buffer: U32, ps: List<&2, Patch>, tail: List<&2, Cmd>) -> List<&2, Cmd>:
+  match ps:
+    case Nil{}:
+      tail
+    case Con{Patch{x, y, w, h, off}, rest}:
+      Region{buffer, image, x, y, w, h, off} <> regions(image, buffer, rest, tail)
+
+# Rectangles of a texture replaced from a staging buffer (rows tightly
+# packed, each patch at its byte offset); the rest of the texture is kept.
+# Frames that sampled it finished before (uploads wait for the device).
+def patch(+image: U32, +buffer: U32, ps: List<&2, Patch>) -> List<&2, Cmd>:
+  Barrier{image, Vk.layout_shader_read(), Vk.layout_transfer_dst(),
+    Vk.stage_fragment_shader(), Vk.stage_transfer(), Vk.access_shader_read(),
+    Vk.access_transfer_write()} <>
+  regions(image, buffer, ps,
+    [Barrier{image, Vk.layout_transfer_dst(), Vk.layout_shader_read(),
+      Vk.stage_transfer(), Vk.stage_fragment_shader(),
+      Vk.access_transfer_write(), Vk.access_shader_read()}])
+
+# Copies an offscreen target (already in TRANSFER_SRC, see to_readback)
+# into a host-visible buffer and makes the bytes visible to the host.
+def readback(+image: U32, +buffer: U32, +width: U32, +height: U32) -> List<&2, Cmd>:
+  [Readback{image, buffer, width, height, 0},
+   Memory{Vk.stage_transfer(), Vk.stage_host(), Vk.access_transfer_write(),
+     Vk.access_host_read()}]
+
 # A whole-image upload from a staging buffer, ending readable by fragment
 # shaders. The previous contents are discarded.
 def upload(+image: U32, buffer: U32, width: U32, height: U32) -> List<&2, Cmd>:
@@ -112,14 +177,15 @@ def upload(+image: U32, buffer: U32, width: U32, height: U32) -> List<&2, Cmd>:
      Vk.stage_transfer(), Vk.stage_fragment_shader(),
      Vk.access_transfer_write(), Vk.access_shader_read()}]
 
-# One frame of instanced quads into a swapchain image.
+# One frame of instanced quads into a swapchain image or offscreen target.
+# `present` False ends the frame ready for a readback instead.
 type Pass is Data:
   Pass{image: U32, view: U32, width: U32, height: U32, clear: U32,
     pipeline: U32, layout: U32, set: U32, instances: U32, quads: U32,
-    texture_width: U32, texture_height: U32}
+    texture_width: U32, texture_height: U32, present: Bool}
 
 def frame(p: Pass) -> List<&2, Cmd>:
-  Pass{+image, view, +w, +h, clear, pipeline, +layout, set, buffer, quads, tw, th} = p
+  Pass{+image, view, +w, +h, clear, pipeline, +layout, set, buffer, quads, tw, th, present} = p
   [to_render(image),
    Render{view, w, h, Vk.load_clear(), clear},
    Viewport{0, 0, w, h},
@@ -130,4 +196,4 @@ def frame(p: Pass) -> List<&2, Cmd>:
    Vertices{0, buffer, 0},
    Draw{6, quads, 0, 0},
    EndRender{},
-   to_present(image)]
+   finish(present, image)]

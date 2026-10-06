@@ -85,6 +85,20 @@ def family.go(n: Nat, xs: List<&2, U32>, +i: U32, found: Maybe<&2, U32>) -> Mayb
 def family(+xs: List<&2, U32>) -> Maybe<&2, U32>:
   family.go(U32.to_nat((W.count(xs) / 3 : U32)), xs, 0, None{})
 
+# Without a surface (offscreen rendering): the first family that draws.
+def graphics.go(n: Nat, xs: List<&2, U32>, +i: U32, found: Maybe<&2, U32>) -> Maybe<&2, U32>:
+  match n:
+    case 0n:
+      found
+    case 1n+p:
+      +ws = xs
+      +f = found
+      +ok = U32.is_ne((W.at(ws, 0n) .&. Vk.queue_graphics() : U32), 0) && Maybe.is_none(&2, U32, f)
+      graphics.go(p, W.drop(ws, 3n), (i + 1 : U32), Bool.pick(Maybe<&2, U32>, ok, Some{i}, f))
+
+def graphics(+xs: List<&2, U32>) -> Maybe<&2, U32>:
+  graphics.go(U32.to_nat((W.count(xs) / 3 : U32)), xs, 0, None{})
+
 # Memory types from vk_memory_types: [count, (flags, heap)*, ...]. The first
 # type allowed by `bits` whose flags include every flag in `want`.
 def memory.go(n: Nat, xs: List<&2, U32>, +i: U32, +bits: U32, +want: U32, found: Maybe<&2, U32>) -> Maybe<&2, U32>:
