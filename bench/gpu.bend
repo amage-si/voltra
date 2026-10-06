@@ -3,9 +3,11 @@ import ../gpu.bend as V
 import ../quads.bend as Q
 import ../words.bend as W
 import ../examples/scene.bend as Scene
+import ../../Ankra/window.bend as A
 import ./cpu.bend as Cpu
 
-# Voltra presenting the same Chromi scene at 960x630 for 600 frames.
+# Voltra presenting the same Chromi scene at 960x630 for 600 frames, in a
+# fixed-size window that Ankra owns.
 # Arguments pick what each frame does:
 #   (none)   static content: the texture is uploaded once, frames only draw;
 #   upload   content changes every frame: raster + upload + draw;
@@ -44,25 +46,28 @@ def one(upload: Bool, +mode: U32, +g: V.Gpu, +img: Image) -> IO(V.Gpu):
     case False{}:
       V.draw(V.invalidate(g), content(U32.is_eq(mode, 2), img), 255)
 
-def frames(n: Nat, +mode: U32, +g: V.Gpu, +img: Image) -> IO(V.Gpu):
+def frames(n: Nat, +mode: U32, +win: A.Win, +g: V.Gpu, +img: Image) -> IO(V.Gpu):
   match n:
     case 0n:
       IO.pure(V.Gpu, g)
     case 1n+p:
       do IO<V.Gpu>:
         +g1 : V.Gpu <- one(U32.is_eq(mode, 1), mode, g, img)
-        +es : List<&2, V.Input> <- V.wait(g1, 0)
-        frames(p, mode, g1, img)
+        got : A.Win & List<&2, A.Input> <- A.wait(win, 0)
+        frames(p, mode, win, g1, img)
 
 def run(+mode: U32, +vsync: Bool, img: Image) -> IO(Unit):
   +im = img
   do IO<Unit>:
-    +g : V.Gpu <- V.open("Voltra bench - GPU", 960, 630, vsync, False{})
+    +win : A.Win <- IO.try(A.Win, A.open(A.Options{"Voltra bench - GPU", 960, 630, False{},
+      0, 0, "Ankra", 0}))
+    +native : List<&2, U32> <- A.native(win)
+    +g : V.Gpu <- V.open(native, 960, 630, vsync)
     IO.print(V.describe(g))
     +g1 : V.Gpu <- V.upload(g, 960, 630, raster(im))
     +c1 : U32 <- Cpu.ticks()
     +t1 : Nat <- IO.now()
-    +g2 : V.Gpu <- frames(600n, mode, g1, im)
+    +g2 : V.Gpu <- frames(600n, mode, win, g1, im)
     +t2 : Nat <- IO.now()
     +c2 : U32 <- Cpu.ticks()
     IO.print("gpu mode " ++ U32.show(mode) ++ ": " ++ U32.show(V.drawn(g2)) ++
@@ -70,6 +75,8 @@ def run(+mode: U32, +vsync: Bool, img: Image) -> IO(Unit):
       U32.show((c2 - c1 : U32)) ++ " CPU ticks, " ++ Cpu.per_frame((c2 - c1 : U32), 600))
     +report : V.Report <- V.close(g2)
     IO.print(V.report.show(report))
+    +left : U32 <- A.close(win)
+    IO.print("window objects left: " ++ U32.show(left))
 
 def run.opts(o: Opts, img: Image) -> IO(Unit):
   Opts{mode, vsync} = o

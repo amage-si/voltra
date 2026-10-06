@@ -2,9 +2,12 @@ import Base
 import ../gpu.bend as V
 import ../quads.bend as Q
 import ../words.bend as W
+import ../../Ankra/window.bend as A
+import ../../Ankra/app.bend as Loop
 import ./scene.bend as Scene
 
-# A frame rendered by Chromi on the CPU, presented by Voltra on the GPU.
+# A frame rendered by Chromi on the CPU, presented by Voltra on the GPU, in
+# a window that Ankra owns.
 #
 # Chromi draws its shape scene at the window's size. The finished quadtree
 # reaches the GPU one of two ways, toggled with the M key:
@@ -13,9 +16,6 @@ import ./scene.bend as Scene
 # A click changes the accent color (Chromi re-renders); resizing re-renders
 # at the new size; an expose only re-presents. Escape or closing the window
 # ends the program.
-
-def forever() -> U32:
-  4294967295
 
 def background() -> U32:
   219422463
@@ -100,72 +100,64 @@ def present(r: Run) -> IO(Run):
     +g1 : V.Gpu <- V.draw(g, qs, background())
     return Run{g1, app}
 
-def paint(go: Bool, +g: V.Gpu, +app: Demo) -> IO(Run):
-  match go:
-    case False{}:
-      IO.pure(Run, Run{g, app})
-    case True{}:
-      do IO<Run>:
-        +r : Run <- render(stale.size(app, V.target_size(g)), g, app)
-        present(r)
-
-def clicks(es: List<&2, V.Input>, +n: U32) -> U32:
+def clicks(es: List<&2, A.Input>, +n: U32) -> U32:
   match es:
     case Nil{}:
       n
-    case Con{V.ButtonInput{x, y, 1, True{}}, rest}:
+    case Con{A.PointerDown{x, y, 0, m}, rest}:
       clicks(rest, (n + 1 : U32))
     case Con{e, rest}:
       clicks(rest, n)
 
-def key(es: List<&2, V.Input>, +sym: U32) -> Bool:
+def key(es: List<&2, A.Input>, +code: U32) -> Bool:
   match es:
     case Nil{}:
       False{}
-    case Con{V.KeyInput{k, True{}}, rest}:
-      U32.is_eq(k, sym) || key(rest, sym)
+    case Con{A.KeyDown{k, r, m}, rest}:
+      U32.is_eq(k, code) || key(rest, code)
     case Con{e, rest}:
-      key(rest, sym)
+      key(rest, code)
 
-def apply.size(m: Maybe<&2, V.Size>, +g: V.Gpu) -> IO(V.Gpu):
+def apply.size(m: Maybe<&2, A.Size>, +g: V.Gpu) -> IO(V.Gpu):
   match m:
     case None{}:
       IO.pure(V.Gpu, g)
-    case Some{V.Size{w, h}}:
+    case Some{A.Size{w, h}}:
       V.resize(g, w, h)
-
-def apply(r: Run, +es: List<&2, V.Input>) -> IO(Run):
-  Run{+g, app} = r
-  Demo{+accent, +leaves, +dirty, qs, w, h, n} = app
-  +c = clicks(es, 0)
-  +m = key(es, 109)
-  +changed = U32.is_gt(c, 0) || m
-  do IO<Run>:
-    +g1 : V.Gpu <- apply.size(V.resized(es, None{}), g)
-    return Run{Bool.pick(V.Gpu, changed || V.exposed(es), V.invalidate(g1), g1),
-      Demo{(accent + c : U32), Bool.xor(leaves, m), dirty || changed, qs, w, h, n}}
 
 def dirty(app: Demo) -> Bool:
   Demo{a, l, d, q, w, h, n} = app
   d
 
-def loop(n: Nat, stop: Bool, +r: Run) -> IO(Run):
-  match n stop:
-    case _ True{}:
-      IO.pure(Run, r)
-    case 0n _:
-      IO.pure(Run, r)
-    case 1n+p False{}:
-      +g = gpu_of(r)
-      +app = app_of(r)
-      do IO<Run>:
-        +r1 : Run <- paint(V.pending(g) || dirty(app), g, app)
-        +es : List<&2, V.Input> <- V.wait(gpu_of(r1),
-          Bool.pick(U32, V.pending(gpu_of(r1)), 0, forever()))
-        +r2 : Run <- apply(r1, es)
-        loop(p, V.closed(es) || key(es, 65307), r2)
+def step(+stop: Bool, +r: Run) -> Loop.Step<Run>:
+  Bool.pick(Loop.Step<Run>, stop, Loop.Stop{r},
+    Bool.pick(Loop.Step<Run>, V.pending(gpu_of(r)) || dirty(app_of(r)), Loop.Redraw{r}, Loop.Keep{r}))
 
-def finish(r: Run) -> IO(Unit):
+# Input and window changes: clicks and M change the content, a new size
+# rebuilds the swapchain, an expose re-presents, Escape stops.
+def update(win: A.Win, batch: List<&2, A.Input>, r: Run) -> IO(Loop.Step<Run>):
+  Run{+g, app} = r
+  Demo{+accent, +leaves, +dirty, qs, w, h, n} = app
+  +es = batch
+  +c = clicks(es, 0)
+  +m = key(es, 109)
+  +changed = U32.is_gt(c, 0) || m
+  do IO<Loop.Step<Run>>:
+    +g1 : V.Gpu <- apply.size(A.resized(es, None{}), g)
+    return step(key(es, 27), Run{Bool.pick(V.Gpu, changed || A.exposed(es), V.invalidate(g1), g1),
+      Demo{(accent + c : U32), Bool.xor(leaves, m), dirty || changed, qs, w, h, n}})
+
+# Re-renders with Chromi when the content or the target size changed, then
+# presents; asks for another frame while one is owed.
+def draw(win: A.Win, r: Run) -> IO(Loop.Step<Run>):
+  Run{+g, +app} = r
+  do IO<Loop.Step<Run>>:
+    +r1 : Run <- render(stale.size(app, V.target_size(g)), g, app)
+    +r2 : Run <- present(r1)
+    return step(False{}, r2)
+
+def finish(end: A.Win & Run) -> IO(Unit):
+  (win, r) = end
   Run{+g, app} = r
   Demo{a, l, d, q, w, h, +renders} = app
   do IO<Unit>:
@@ -173,6 +165,8 @@ def finish(r: Run) -> IO(Unit):
       U32.show(renders) ++ ", swapchain rebuilds: " ++ U32.show(V.rebuilds(g)))
     +report : V.Report <- V.close(g)
     IO.print(V.report.show(report))
+    +left : U32 <- A.close(win)
+    IO.print("window objects left: " ++ U32.show(left))
 
 def has(args: List<String>, +word: String) -> Bool:
   match args:
@@ -186,7 +180,9 @@ def main() -> IO(Unit):
   do IO<Unit>:
     args : List<String> <- IO.args()
     +leaves : Bool = has(args, "leaves")
-    +g : V.Gpu <- V.open("Voltra - Chromi frame on the GPU", 960, 630, True{}, True{})
+    +win : A.Win <- IO.try(A.Win, A.open(A.options("Voltra - Chromi frame on the GPU", 960, 630)))
+    +native : List<&2, U32> <- A.native(win)
+    +g : V.Gpu <- V.open(native, 960, 630, True{})
     IO.print(V.describe(g))
-    +r : Run <- loop(1000000n, False{}, Run{g, Demo{0, leaves, True{}, [], 0, 0, 0}})
-    finish(r)
+    end : A.Win & Run <- Loop.run(~Run, ~update, ~draw, win, Run{g, Demo{0, leaves, True{}, [], 0, 0, 0}})
+    finish(end)
