@@ -15,7 +15,7 @@ the development Linux machine. Compatibility layers will follow proven progress.
 
 ![A Chromi frame presented by Voltra on the GPU, captured from its window.](docs/preview.png)
 
-The capture above is a frame rendered by [Chromi](https://github.com/amageweb/chromi)
+The capture above is a frame rendered by [Chromi](https://github.com/amage-si/chromi)
 on the CPU and presented by Voltra on the GPU. It is identical, pixel for
 pixel, to Chromi's own output (all 604,800 pixels).
 
@@ -81,7 +81,7 @@ X11 development headers/libraries, a Vulkan 1.3 driver with its loader
 are needed to build.
 
 ```sh
-git clone https://github.com/amageweb/voltra.git Voltra
+git clone https://github.com/amage-si/voltra.git Voltra
 cd Voltra
 export BEND_NO_TELEMETRY=1
 bend version
@@ -107,7 +107,7 @@ The Chromi example needs Chromi beside Voltra, keeping the capitalized
 directory names because Bend imports are case-sensitive:
 
 ```sh
-git clone https://github.com/amageweb/chromi.git ../Chromi
+git clone https://github.com/amage-si/chromi.git ../Chromi
 git -C ../Chromi checkout --detach 665a18b84900cfe533df87155e77b4e49dd1f92b
 bend examples/chromi.bend -o build/chromi
 ./build/chromi --threads 2 --gpu off          # texture mode
