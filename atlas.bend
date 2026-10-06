@@ -24,12 +24,20 @@ def reset(a: Atlas) -> Atlas:
   Atlas{w, h, t, s, e} = a
   Atlas{w, h, 0, Nil{}, Nil{}}
 
+def find.pick(hit: Bool, e: Entry, later: Unit -> Maybe<&2, Entry>) -> Maybe<&2, Entry>:
+  match hit:
+    case True{}:
+      Some{e}
+    case False{}:
+      later(Unit{})
+
+# Stops at the first entry with the key (the rest is not visited).
 def find(es: List<&2, Entry>, +key: U32) -> Maybe<&2, Entry>:
   match es:
     case Nil{}:
       None{}
     case Con{Entry{+k, x, y, w, h}, rest}:
-      Bool.pick(Maybe<&2, Entry>, U32.is_eq(k, key), Some{Entry{k, x, y, w, h}}, find(rest, key))
+      find.pick(U32.is_eq(k, key), Entry{k, x, y, w, h}, u => find(rest, key))
 
 def lookup(a: Atlas, +key: U32) -> Maybe<&2, Entry>:
   Atlas{w, h, t, s, entries} = a
