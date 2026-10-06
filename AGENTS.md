@@ -11,12 +11,17 @@ appears in the project scope.
 - Implement library logic in Bend 2. Do not wrap an existing renderer or
   toolkit (wgpu, SDL, bgfx, raylib, ...).
 - The native bridge (`native/voltra.c` and its JS twin) stays thin and
-  explicit: one effect per Xlib or Vulkan call, or a field-by-field
-  translation of Bend words into one Vulkan struct. Decisions belong in Bend:
-  device and memory selection, formats, present modes, resize policy,
-  barriers and layouts, command order, frames in flight, lifetimes and
+  explicit: one effect per Vulkan call, or a field-by-field translation of
+  Bend words into one Vulkan struct. Decisions belong in Bend: device and
+  memory selection, formats, present modes, resize policy, barriers and
+  layouts, command order, frames in flight, atlas placement, lifetimes and
   destruction order. If a new native call is needed, add the smallest one,
   document it in `docs/bridge.md`, and keep `native/abi_check.py` passing.
+- Windows and their events belong to Ankra: Voltra makes its surface from the
+  native window Ankra hands over and never opens a window or reads events.
+- The shader's integer rules are a contract with Chromi's CPU reference
+  (`Chromi/replay.bend`): change both together and keep `gpu_tests.bend`
+  and Chromi's `gpu_tests.bend` at 0 differing pixels.
 - The official Bend compiler/runtime, the OS, the Vulkan loader and the
   driver remain external dependencies.
 - Before writing Bend, run `bend version` and read `bend guide` (and
@@ -40,9 +45,11 @@ local quality. Introduce abstractions from concrete needs.
 - Preserve existing work and keep the library's boundary clear: drawing
   belongs to Chromi, windows and input policy to Ankra.
 - Favor simple, maintainable code. Back performance claims with measurements.
-- Run the native checks after changes. When presentation changes, run an
-  example on a real window, capture only that window, check resize and normal
-  closure, and confirm the teardown report (0 objects left, 0 driver messages).
+- Run the native checks after changes, and `gpu_tests.bend` when drawing
+  changes. When presentation changes, run an example on a real window,
+  capture only that window (its toplevel, never a screen region), check
+  resize and normal closure, and confirm the teardown report (0 objects
+  left, 0 driver messages).
 - Compilation is not visual proof; a passing check is not proof of the whole
   system. State partial support and unverified behavior explicitly.
 - Build sequentially and keep compilation units small; the Bend compiler can

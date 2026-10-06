@@ -1,37 +1,45 @@
 # Voltra API
 
 Voltra depends only on `Base` from the official Bend toolchain and on its own
-modules. Import paths are relative to the calling file; an application next to
-the `Voltra` directory uses:
+modules; windows come from [Ankra](https://github.com/amage-si/ankra). Import
+paths are relative to the calling file; an application next to the `Voltra`
+and `Ankra` directories uses:
 
 ```bend
 import Base
 import ./Voltra/gpu.bend as V
 import ./Voltra/quads.bend as Q
+import ./Voltra/atlas.bend as At
+import ./Ankra/window.bend as A
 ```
 
 ## The context
 
-`V.Gpu` is `Data`: a value holding slot ids, the swapchain, the frames in
-flight, the texture, the registry of live native objects and a few counters.
-Every operation takes a context and returns the next one; keep using the
-returned value. Mark bindings `+g` when you read a context more than once.
+`V.Gpu` is `Data`: a value holding slot ids, the swapchain or offscreen target,
+the frames in flight, the texture, the registry of live native objects and a
+few counters. Every operation takes a context and returns the next one; keep
+using the returned value. Mark bindings `+g` when you read a context more than
+once.
 
 | Function | Contract |
 | --- | --- |
-| `open(title, w, h, vsync, resizable)` | `IO(Gpu)`. Opens a `w` x `h` window, picks the best Vulkan 1.3+ GPU that presents to it, and builds the swapchain, pipeline, two frames in flight and a 1x1 white texture. `vsync` True presents with FIFO; False prefers IMMEDIATE, then MAILBOX. A window that is not `resizable` asks for a fixed size. |
-| `describe(g)` | Device and swapchain report as a `String`. |
-| `draw(g, quads, clear)` | `IO(Gpu)`. Clears to `clear` (`0xRRGGBBAA`), draws the quads in list order (later quads on top) and presents. Rebuilds the swapchain when presentation is out of date or suboptimal. Does nothing while the window has no extent (minimized). |
-| `upload(g, w, h, pixels)` | `IO(Gpu)`. Replaces the texture with a row-major `w` x `h` RGBA8 image (`Array<U32>` of `0xRRGGBBAA` words; the array may be larger). Recreates the texture when the size changes. Synchronous: waits for in-flight frames, then for the copy. |
-| `wait(g, ms)` | `IO(List<&2, Input>)`. Waits up to `ms` for window events: 0 polls, 4294967295 waits without a deadline. The wait parks on the X connection, without busy polling. |
-| `resize(g, w, h)` | `IO(Gpu)`. Records a new window size; rebuilds the swapchain when it differs from the current one. |
+| `open(native, w, h, vsync)` | `IO(Gpu)`. `native` is Ankra's `A.native(win)` words (`[1, Display* high, Display* low, window id, screen]`). Makes the Xlib surface, picks the best Vulkan 1.3+ GPU that presents to it, and builds a `w` x `h` swapchain, the 2D pipeline, two frames in flight and a 1x1 white texture. `vsync` True presents with FIFO; False prefers IMMEDIATE, then MAILBOX. The window stays Ankra's. |
+| `open_offscreen(w, h)` | `IO(Gpu)`. No window: frames are drawn into a `w` x `h` image in the swapchain format (B8G8R8A8), kept for `read`. The size is fixed. |
+| `describe(g)` | Device and target report as a `String`. |
+| `draw(g, quads, clear)` | `IO(Gpu)`. Clears to `clear` (`0xRRGGBBAA`), draws the quads in list order (later quads on top) in one instanced draw, and presents (offscreen: keeps the image). Rebuilds the swapchain when presentation is out of date or suboptimal. Does nothing while the window has no extent (minimized). |
+| `upload(g, w, h, pixels)` | `IO(Gpu)`. Replaces the texture with a row-major `w` x `h` RGBA8 image (`Array<U32>` of `0xRRGGBBAA` words; the array may be larger). Recreates the texture when the size changes. Synchronous. |
+| `blank(g, w, h)` | `IO(Gpu)`. A new `w` x `h` texture whose contents are undefined until `update` writes rectangles of it: an atlas. |
+| `update(g, regions)` | `IO(Gpu)`. Replaces rectangles of the texture in one transfer and keeps the rest. `Region{x, y, width, height, pixels}`, pixels row-major `0xRRGGBBAA`. Synchronous. |
+| `read(g)` | `IO(Gpu & Array<U32>)`. Offscreen only: the last frame as row-major `0xRRGGBBAA` words (`w` x `h` of them). Synchronous. |
+| `resize(g, w, h)` | `IO(Gpu)`. Records a new window size (Ankra's `Resized`); rebuilds the swapchain when it differs from the current one. |
 | `invalidate(g)` | Marks the content stale: `pending(g)` becomes True. |
-| `close(g)` | `IO(Report)`. Waits for the GPU, destroys every live native object newest first (children before devices, devices before the instance, the instance before the window), and reports. |
+| `close(g)` | `IO(Report)`. Waits for the GPU, destroys every live native object newest first (children before devices, devices before the instance), and reports. Close Voltra before the window. |
 
-Accessors: `pending(g)` (the window shows stale content; draw before waiting
-indefinitely), `target_size(g)` and `window_size(g)` (`Size{width, height}`),
-`drawn(g)` (frames presented), `rebuilds(g)` (swapchains rebuilt),
-`device(g)`, `window(g)`, `swapchain(g)` (slot ids; 0 means none).
+Accessors: `pending(g)` (the target shows stale content; draw again before
+waiting indefinitely), `target_size(g)`, `window_size(g)` and
+`texture_size(g)` (`Size{width, height}`), `drawn(g)` (frames drawn),
+`rebuilds(g)` (swapchains rebuilt), `device(g)`, `swapchain(g)` (slot ids; 0
+means none), `drawable(g)`, `offscreen_target(g)`.
 
 `Report{live, warnings, errors}`: native objects left after teardown (0 when
 nothing leaked) and the warnings and errors reported by the Vulkan debug
@@ -42,58 +50,68 @@ the program with the driver's message (through `IO.try`/`IO.die`).
 
 ## A typical loop
 
+Ankra's application loop (`Ankra/app.bend`) does the waiting; the app draws
+when its content is stale and resizes on `Resized`:
+
 ```bend
-def loop(n: Nat, stop: Bool, +g: V.Gpu) -> IO(V.Gpu):
-  match n stop:
-    case _ True{}:
-      IO.pure(V.Gpu, g)
-    case 0n _:
-      IO.pure(V.Gpu, g)
-    case 1n+p False{}:
-      do IO<V.Gpu>:
-        +g1 : V.Gpu <- paint(V.pending(g), g)      # draw only when stale
-        +es : List<&2, V.Input> <- V.wait(g1, Bool.pick(U32, V.pending(g1), 0, 4294967295))
-        +g2 : V.Gpu <- apply(g1, es)                # resize, input, invalidate
-        loop(p, V.closed(es), g2)
+def update(win: A.Win, batch: List<&2, A.Input>, g: V.Gpu) -> IO(Loop.Step<V.Gpu>):
+  +es = batch
+  do IO<Loop.Step<V.Gpu>>:
+    +g1 : V.Gpu <- resized(A.resized(es, None{}), g)       # V.resize on a new size
+    return Bool.pick(Loop.Step<V.Gpu>, A.exposed(es) || V.pending(g1),
+      Loop.Redraw{g1}, Loop.Keep{g1})
+
+def draw(win: A.Win, g: V.Gpu) -> IO(Loop.Step<V.Gpu>):
+  ...   # V.draw at V.target_size(g); Redraw again while V.pending
 ```
 
 `examples/quads.bend` and `examples/chromi.bend` contain complete loops.
-Drawing only while `pending` and otherwise waiting without a deadline is what
+Drawing only when stale and otherwise waiting without a deadline is what
 keeps an idle window at zero frames and zero CPU.
-
-## Events
-
-`Input` constructors: `Closed{}`, `Resized{width, height}`, `Exposed{}`,
-`KeyInput{keysym, down}` (X11 keysym, e.g. 65307 for Escape),
-`ButtonInput{x, y, button, down}` (1 left, 2 middle, 3 right, 4/5 wheel),
-`MotionInput{x, y}`, `FocusInput{gained}`. Helpers: `closed(es)`,
-`exposed(es)`, `resized(es, None{})` (the last size in the batch). Window
-coordinates are physical pixels.
 
 ## Quads
 
-`Q.Quad{x, y, width, height, u, v, source_width, source_height, color, textured}`.
-`x` and `y` are signed 32-bit values carried in `U32` bits.
+`Q.Quad{x, y, width, height, clip_x0, clip_y0, clip_x1, clip_y1, color, kind,
+radius, border, a, b, c, d}`: sixteen words per instance. `x` and `y` and
+the clip are signed 32-bit values carried in `U32` bits. A quad covers the
+pixels whose centers lie inside it, minus those outside its clip box
+`[x0, x1) x [y0, y1)`. The rules below are the shader's
+(`shaders/prim.frag`), all in integer arithmetic.
 
 | Function | Contract |
 | --- | --- |
 | `Q.fill(x, y, w, h, rgba)` | A flat rectangle. |
-| `Q.image(x, y, w, h, u, v, sw, sh, rgba)` | A rectangle sampling the texel region `(u, v, sw, sh)` of the texture, multiplied by `rgba` (`0xFFFFFFFF` leaves the texels unchanged). Sampling is nearest-neighbor. |
-| `Q.pack(quads)` | Instance words, 10 per quad; what `draw` uploads. |
+| `Q.image(x, y, w, h, u, v, sw, sh, tint)` | The texel region `(u, v, sw, sh)` mapped onto the quad by nearest texel (`u + dx * sw / w`), each channel tinted `(texel * tint + 127) / 255`; `0xFFFFFFFF` keeps the texels. |
+| `Q.mask(x, y, w, h, u, v, ink)` | Texel `(u + dx, v + dy)`'s red channel is the coverage `c` of pixel `(x + dx, y + dy)`; the ink's alpha becomes `(alpha * c + 127) / 255`. |
+| `Q.rounded(x0, y0, x1, y1, r, rgba)` | A box in 1/8 pixels with corner radius `r` (1/8 pixels, at most half the shorter side). Coverage: 4x4 samples per pixel at 1/8, 3/8, 5/8, 7/8; a sample is inside when it is inside the box and, in a corner zone, within `r` of the corner's center. `h` hits give `c = (255 h + 8) / 16`, then alpha as for masks. |
+| `Q.ring(x0, y0, x1, y1, r, b, rgba)` | The same box minus the box inset by `b` with radius `max(r - b, 0)`. |
+| `Q.clipped(q, x0, y0, x1, y1)` | The quad with that clip box (the constructors' clip is unlimited). |
+| `Q.pack(quads)` | Instance words, 16 per quad; what `draw` uploads. |
 | `Q.leaves(image, x, y, side, w, h, acc)` | Every leaf of a `Base.Image` quadtree as one opaque quad, clipped to `w` x `h`. |
 | `Q.raster(image, array, x, y, side, w, h)` | The quadtree as a row-major `w` x `h` RGBA8 array, ready for `upload`. |
 | `Q.side(w, h)` | The power-of-two side of the quadtree covering `w` x `h`. |
 | `Q.opaque(rgb)` | `0xRRGGBB` to `0xRRGGBBFF`. |
+| `Q.floor8(v)`, `Q.ceil8(v)` | Signed floor and ceiling of `v / 8`. |
 
-`Base.Image` leaves are `0xRRGGBB`, the format Chromi's `finish` produces.
-Blending is straight-alpha source-over in encoded sRGB, matching Chromi.
+Blending is straight-alpha source-over in encoded sRGB, matching Chromi:
+`channel = round(s a / 255 + d (255 - a) / 255)`, verified bit-exact against
+`(s a + d (255 - a) + 127) / 255` on the development GPU (see
+`gpu_tests.bend`).
+
+## Atlas
+
+`At.new(w, h)`, `At.place(atlas, key, w, h) -> At.Atlas & Maybe<At.Entry>`
+(a shelf that fits, else a new shelf; None when full), `At.lookup(atlas, key)`,
+`At.count(atlas)`, `At.reset(atlas)`. `Entry{key, x, y, width, height}`.
+Placement is bookkeeping only; the texels travel with `V.update`.
 
 ## Lower layers
 
-`policy.bend` holds the selection rules (`best`, `family`, `memory`, `format`,
-`present_mode`, `image_count`, `extent`, `alpha`), `commands.bend` the
-command list (`Cmd`, `encode`, `valid`, `frame`, `upload`, `to_render`,
-`to_present`) and `native.bend` the raw effects documented in
+`policy.bend` holds the selection rules (`best`, `family`, `graphics`,
+`memory`, `format`, `present_mode`, `image_count`, `extent`, `alpha`),
+`commands.bend` the command list (`Cmd`, `encode`, `valid`, `frame`,
+`upload`, `patch`, `texture_init`, `readback`, `to_render`, `to_present`,
+`to_readback`) and `native.bend` the raw effects documented in
 [bridge.md](bridge.md). Applications should prefer `gpu.bend`; the lower
 layers are public because Bend modules have no export boundary, and they may
 change.

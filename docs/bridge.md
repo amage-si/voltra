@@ -8,10 +8,13 @@ lane) fails cleanly. The effects are declared in [native.bend](../native.bend).
 
 ## Shape of the bridge
 
-- **One call per effect.** Each effect performs one Xlib or Vulkan call, or a
-  fixed translation of Bend words into one Vulkan create-info struct and the
-  call that consumes it. `vk_record` translates each command word into one
+- **One call per effect.** Each effect performs one Vulkan call, or a fixed
+  translation of Bend words into one Vulkan create-info struct and the call
+  that consumes it. `vk_record` translates each command word into one
   `vkCmd*` call; it does not choose or reorder anything.
+- **No window.** The presentation surface is made from the native window
+  that Ankra hands over as words (`vk_surface`). Voltra never opens, reads
+  or closes a display connection or a window.
 - **Slots.** Native objects live in a 4096-entry table and cross into Bend as
   `U32` slot ids (0 means none). The bridge checks that a slot is alive and of
   the expected kind, so a stale id fails instead of crashing. Lifetimes,
@@ -19,35 +22,29 @@ lane) fails cleanly. The effects are declared in [native.bend](../native.bend).
 - **No SDK.** Vulkan is reached through `dlopen("libvulkan.so.1")` and
   `vkGetInstanceProcAddr`; no headers or link flags are needed. The bridge
   declares the Vulkan structs it uses (64-bit Linux ABI);
-  `native/abi_check.py` compares their 483 sizes and offsets with the
-  Khronos headers. Including `<X11/Xlib.h>` makes `bend` link libX11, the
-  same rule the official Window effect relies on.
+  `native/abi_check.py` compares their 488 sizes and offsets (68 structs)
+  with the Khronos headers. `<X11/Xlib.h>` provides the `Display` and
+  `Window` types of the Xlib surface create-info.
 - **Arrays without copies.** Effects that take an `Array<U32>` (`vk_write`,
-  `vk_shader`, `vk_record`) read its words in place and hand the array back.
+  `vk_read`, `vk_shader`, `vk_record`) read or write its words in place and
+  hand the array back.
   This uses runtime internals (`blk_loc`, `blk_cls`) that carry no ABI
   promise: rebuild and retest the bridge with every Bend update.
 - **Failures** answer `Fail{(code, text)}`: `-VkResult` for a Vulkan error,
   22 (EINVAL) for a bad slot or argument, 24 (EMFILE) when the slot table is
-  full, 95 (ENOTSUP) for a missing loader or display.
+  full, 95 (ENOTSUP) for a missing loader or an unsupported native window
+  kind.
 
-Size: 1,969 lines (1,594 non-blank, non-comment). About 490 of them are the
+Size: 1,877 lines (1,504 non-blank, non-comment). About 500 of them are the
 Vulkan declarations and the entry-point table, about 140 the slot table and
-term helpers, and the rest the 40 effects (each with its `#ifdef` guard and
+term helpers, and the rest the 38 effects (each with its `#ifdef` guard and
 registration).
 
 ## Effects
 
-All answer `IO(Result<&1, &1, U32 & String, T>)`; `vk_write`, `vk_shader`
-and `vk_record` answer `IO(Array<U32> & Result<...>)`. Word lists are
-`List<&2, U32>`.
-
-### Window (Xlib)
-
-| Effect | Native call | Arguments → answer |
-| --- | --- | --- |
-| `window_open(title, w, h, flags)` | `XOpenDisplay`, `XCreateSimpleWindow`, WM protocols, `XMapWindow` | Flags bit 0: fixed size. Background `None`, class `Voltra`. → window slot |
-| `window_wait(win, ms)` | `XPending`/`XNextEvent`; parks on the X socket with `io_wait_on` | 0 polls, 4294967295 no deadline. → event words, 5 per event: `1` close; `2` configure w h; `3` expose; `4` key keysym down; `5` button x y button down; `6` motion x y; `7` focus in |
-| `window_title(win, title)` | `XStoreName`, `_NET_WM_NAME` | → Unit |
+All answer `IO(Result<&1, &1, U32 & String, T>)`; `vk_write`, `vk_read`,
+`vk_shader` and `vk_record` answer `IO(Array<U32> & Result<...>)`. Word
+lists are `List<&2, U32>`.
 
 ### Instance, GPUs, device
 
@@ -56,7 +53,7 @@ and `vk_record` answer `IO(Array<U32> & Result<...>)`. Word lists are
 | `vk_instance(flags)` | `dlopen`, `vkCreateInstance` (1.3; `VK_KHR_surface`, `VK_KHR_xlib_surface`, `VK_EXT_debug_utils`), debug messenger | Flags bit 0: enable `VK_LAYER_KHRONOS_validation` if installed. → `[slot, layer_on]` |
 | `vk_gpus(inst)` | `vkEnumeratePhysicalDevices`, properties, memory properties | → `[count, (type, vendor, device, api, driver, maxImage2D, deviceLocalMiB)*]` |
 | `vk_gpu_name(inst, gpu)` | `vkGetPhysicalDeviceProperties` | → name |
-| `vk_surface(inst, win)` | `vkCreateXlibSurfaceKHR` | → surface slot |
+| `vk_surface(inst, native)` | `vkCreateXlibSurfaceKHR` | `native`: `[kind, Display* high, Display* low, window id, screen]` from Ankra; kind 1 (Xlib) only. → surface slot |
 | `vk_queue_families(inst, gpu, surface)` | queue family properties, `vkGetPhysicalDeviceSurfaceSupportKHR` | → `(flags, count, presents)*` |
 | `vk_device(inst, gpu, family)` | `vkCreateDevice` (one queue, `VK_KHR_swapchain`, dynamic rendering), `vkGetDeviceQueue` | → device slot |
 | `vk_memory_types(dev)` | `vkGetPhysicalDeviceMemoryProperties` | → `[count, (flags, heap)*, heaps, (MiB, flags)*]` |
@@ -81,6 +78,7 @@ and `vk_record` answer `IO(Array<U32> & Result<...>)`. Word lists are
 | `vk_bind(dev, object, memory, offset)` | `vkBindBufferMemory` / `vkBindImageMemory` | → Unit |
 | `vk_map(dev, memory)` | `vkMapMemory` (whole allocation, persistent) | → Unit |
 | `vk_write(memory, offset, array, count)` | `memcpy` into the mapping | Bounds-checked against the allocation and the array. → (array, Unit) |
+| `vk_read(memory, offset, array, count)` | `memcpy` from the mapping | The read side of `vk_write`, for readbacks; Bend makes device writes visible to the host first. → (array, Unit) |
 | `vk_image_view(dev, image, desc)` | `vkCreateImageView` | desc `[format, swizzleR, swizzleG, swizzleB, swizzleA, aspect]`. → view slot |
 | `vk_sampler(dev, desc)` | `vkCreateSampler` | desc `[magFilter, minFilter, addressMode]`. → sampler slot |
 
@@ -108,7 +106,7 @@ and `vk_record` answer `IO(Array<U32> & Result<...>)`. Word lists are
 | `vk_wait(dev, fence, ms, reset)` | `vkWaitForFences`, then `vkResetFences` if `reset` | → 0 signaled, 1 timed out |
 | `vk_submit(dev, cmd, wait, stage, signal, fence)` | `vkQueueSubmit` | Semaphores and fence may be 0. → Unit |
 | `vk_idle(dev)` | `vkDeviceWaitIdle` | → Unit |
-| `destroy(slot)` | the matching `vkDestroy*`/`vkFree*`, or `XDestroyWindow` + `XCloseDisplay` | Swapchain images, descriptor sets and command buffers only release their slot. → Unit |
+| `destroy(slot)` | the matching `vkDestroy*`/`vkFree*` | Swapchain images, descriptor sets and command buffers only release their slot. → Unit |
 | `stats()` | none | → `[liveSlots, warnings, errors, layerOn]` |
 
 ### Command words (`vk_record`)
@@ -126,13 +124,20 @@ and `vk_record` answer `IO(Array<U32> & Result<...>)`. Word lists are
 | 9 | binding buffer offset | `vkCmdBindVertexBuffers` |
 | 10 | vertexCount instanceCount firstVertex firstInstance | `vkCmdDraw` |
 | 11 | buffer image width height bufferOffset | `vkCmdCopyBufferToImage` (to TRANSFER_DST layout) |
+| 12 | buffer image x y width height bufferOffset | `vkCmdCopyBufferToImage` into a rectangle (atlas regions) |
+| 13 | image buffer width height bufferOffset | `vkCmdCopyImageToBuffer` (from TRANSFER_SRC layout) |
+| 14 | srcStage dstStage srcAccess dstAccess | `vkCmdPipelineBarrier` with one `VkMemoryBarrier` |
 
 `commands.bend` builds these words from `Cmd` values and checks the
 structural rules (`valid`) before they reach the bridge.
 
-## Why Voltra owns its window
+## The window is Ankra's
 
-The official `Window` effect does not expose its native handle, and it
-presents with `XPutImage` from a fixed-size buffer. A Vulkan surface needs the
-`Display*` and `Window`, so the bridge opens its own X11 window, handles its
-events and lets the swapchain present into it.
+Voltra makes its surface from the window Ankra hands over: the Xlib
+`Display*` (as two words) and the window id. Ankra creates, maps, resizes
+and destroys the window and reads its events; Voltra only presents into it,
+and must be closed before the window. Ankra hands over a connection of its
+own made for presentation, not the one it reads events from: the Vulkan
+driver reads its connection from its own threads, and on the event
+connection that delayed input (see Ankra's
+[bridge reference](https://github.com/amage-si/ankra/blob/main/docs/bridge.md#why-two-connections)).
