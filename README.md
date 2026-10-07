@@ -6,8 +6,9 @@ Voltra is the GPU layer of the AMAGE UI ecosystem. It picks a Vulkan device,
 builds a swapchain for a window that [Ankra](https://github.com/amage-si/ankra)
 owns (or an offscreen image), uploads textures and atlas regions, and draws
 instanced 2D quads: flat fills, images, coverage masks and antialiased rounded
-boxes and rings, each clipped. Then it presents, resizes and tears down
-cleanly. The library is written in Bend 2; the only native code is a thin,
+boxes and rings, each clipped. A retained canvas keeps the last picture, so a
+frame can redraw only the rectangles that changed and tell the compositor
+which ones they were. Then it presents, resizes and tears down cleanly. The library is written in Bend 2; the only native code is a thin,
 documented bridge of Vulkan calls exposed as Bend effects.
 
 **Status:** early Linux implementation, tested with **Bend 2.0.35** on an
@@ -20,8 +21,8 @@ the development Linux machine. Compatibility layers will follow proven progress.
 The capture above is a frame rendered by [Chromi](https://github.com/amage-si/chromi)
 on the CPU and presented by Voltra on the GPU in an Ankra window. It is
 identical, pixel for pixel, to Chromi's own output (all 604,800 pixels).
-Chromi's integrated demo (`examples/eco`) draws whole frames through Voltra's
-2D quads instead; see its README.
+Chromi's integrated demo (`examples/eco`) draws its frames through Voltra's 2D
+quads instead, redrawing only what changed; see its README.
 
 ## What works today
 
@@ -40,6 +41,14 @@ Chromi's integrated demo (`examples/eco`) draws whole frames through Voltra's
   integer arithmetic in the shader, so a CPU renderer following the same
   rules produces the same bytes. Straight-alpha source-over blending in
   encoded sRGB, as Chromi's CPU composition.
+- A retained canvas per target (`paint`): the picture stays from one frame to
+  the next, so a frame can redraw only some rectangles, each with its own
+  instances and the scissor on it, before the canvas is copied into the
+  acquired swapchain image; a whole paint clears it first (a first frame, a
+  new size). The present then names the changed rectangles
+  (`VK_KHR_incremental_present`, enabled when the device offers it). New
+  atlas regions are copied inside the same frame, so the CPU never waits for
+  the device. `draw` still draws whole frames straight into the image.
 - Textures: whole-image uploads, blank textures with rectangle updates in one
   transfer (`update`), and an atlas allocator (`atlas.bend`, shelves; entries
   found by key in a persistent map, `keys.bend`).
@@ -47,7 +56,8 @@ Chromi's integrated demo (`examples/eco`) draws whole frames through Voltra's
   Patricia trie): lookups follow one branch per distinguishing bit and only
   borrow the map, `put`/`del` rebuild one path. The atlas and Chromi's demo
   text use it; any caller may.
-- Offscreen targets and readback (`open_offscreen`, `read`), for pixel tests.
+- Offscreen targets and readback (`open_offscreen`, `read`), for pixel tests;
+  `resize` makes an offscreen target again at a new size.
 - Two frames in flight with per-frame fences, semaphores, command buffers and
   growable instance buffers.
 - Ordered teardown of every native object, reporting leaked objects and the
@@ -55,15 +65,16 @@ Chromi's integrated demo (`examples/eco`) draws whole frames through Voltra's
 
 How it was verified on the development machine:
 
-- **71 native checks** (`tests.bend`) of the Bend-side logic: policies,
-  command encoding and validation (patches, readback, memory barriers),
-  quad packing including clips and signed eighths, quadtree conversion,
-  atlas packing, readback conversion and slot tracking. No display or GPU.
+- **76 native checks** (`tests.bend`) of the Bend-side logic: policies,
+  command encoding and validation (patches, readback, memory barriers,
+  image copies, and whole, partial and empty canvas paints), quad packing
+  including clips and signed eighths, quadtree conversion, atlas packing,
+  readback conversion and slot tracking. No display or GPU.
 - **11 key map checks** (`keys_tests.bend`): random puts, removals and
   lookups against a reference list (2 x 3000 operations), edge keys across
   the high bit, ascending order, persistence of older versions, and the
   depth of 450 atlas-style keys (13).
-- **7 GPU checks** (`gpu_tests.bend`, offscreen, no display): each quad kind
+- **14 GPU checks** (`gpu_tests.bend`, offscreen, no display): each quad kind
   drawn and read back, compared pixel by pixel with values computed in Bend
   by the shader's integer rules: flat quads with clips and translucency;
   every source byte at every alpha (texels); tinted texels; every coverage at
@@ -71,17 +82,30 @@ How it was verified on the development machine:
   destination values (86 frames, 5,636,096 blended pixels). **0 pixels
   differ** in every check on the RTX 3050. A deliberately wrong expectation
   was detected (2,850,560 differing pixels), so the comparison is not vacuous.
+  The canvas: a whole paint, a partial paint of one changed box over the
+  kept picture, a paint with nothing to redraw, and a partial paint that
+  uploads a texture region and samples it in the same frame each equal the
+  expected frame (0 differing pixels); an offscreen target made again at
+  128x96 holds no picture until a whole paint, which equals the frame.
 - **Visual:** the quad example and the Chromi example captured from their own
   windows (`grim -T`) at their opening size and after resizes by the window
   manager (960x630, 500x760, 1280x480); the content follows each size.
+  Chromi's demo and text grid, painted partially through Tab, activations
+  and resizes, equal its previous full-redraw binaries in every capture.
+- **Present regions:** an X client watching the window's damage
+  ([eco-bench](https://github.com/amage-si/eco-bench) `tools/damage.c`) saw
+  each partial frame of Chromi's grid damage only its changed rectangles
+  (3,400 to 4,900 pixels) instead of the whole 900x560 window (504,000
+  pixels) as without the extension, so XWayland hands the compositor about
+  a hundredth of the window to recompose.
 - **Pixel-exact:** the GPU-presented Chromi frame equals the CPU reference
   written by `examples/reference.bend` (`magick compare -metric AE` 0).
 - **Teardown:** every run ended with 0 native objects left and 0 driver
   warnings or errors. The Khronos validation layer is not installed on the
   development machine (package `vulkan-validation-layers`), so
   validation-layer coverage is still pending.
-- **ABI:** `native/abi_check.py` compares 488 sizes and offsets of the bridge's
-  Vulkan declarations (68 structs) with the official Khronos headers.
+- **ABI:** `native/abi_check.py` compares 509 sizes and offsets of the bridge's
+  Vulkan declarations (73 structs) with the official Khronos headers.
 
 ## Measurements
 
@@ -100,7 +124,11 @@ Ankra window. Method and raw output: [docs/bench.md](docs/bench.md).
 Chromi's draw-list path (whole UI frames as a few hundred quads) is measured
 in [Chromi's bench](https://github.com/amage-si/chromi/blob/main/docs/bench.md):
 about 1.4–1.7 ms of CPU per redraw against 72–85 ms on the CPU/`XPutImage`
-path, 0 frames and 0 main-thread wakeups while idle.
+path, 0 frames and 0 main-thread wakeups while idle. With retained frames
+painted on the canvas, an activation in Chromi's 5000-label grid draws 21
+quads and is presented 0.6 ms after the key (it drew about 20,000 quads in
+32.9 ms); see the
+[Eco vs GPUI benchmark](https://github.com/amage-si/eco-bench#after-partial-redraw).
 
 ## Quick start
 
@@ -179,11 +207,11 @@ the [examples](examples/).
 
 ## The native bridge
 
-`native/voltra.c` (1,877 lines, 1,504 non-blank and non-comment), with the JS
+`native/voltra.c` (1,940 lines, 1,556 non-blank and non-comment), with the JS
 twin Bend requires (`native/voltra.js`, which answers ENOTSUP), exposes 38
 effects. Each one is a single Vulkan call, or a field-by-field translation of
 Bend words into one Vulkan create-info struct; `vk_record` translates each of
-14 command words into one `vkCmd*` call. Objects cross into Bend as `U32`
+15 command words into one `vkCmd*` call. Objects cross into Bend as `U32`
 slot ids. Bend decides everything else: which GPU, queue family, memory type,
 format, present mode and image count; when to rebuild the swapchain;
 barriers, layouts and command order; frames in flight; atlas placement; and
@@ -201,9 +229,11 @@ Vulkan types it uses, checked against the Khronos headers by
 - One Vulkan instance per process and one texture per context (an atlas is
   one texture). There is no mipmapping, depth buffer, MSAA, custom shader or
   user pipeline yet; images are sampled by nearest texel.
-- Uploads and readbacks are synchronous: they wait for the GPU to finish
-  in-flight frames.
-- Offscreen targets keep the size they were opened with.
+- `upload`, `update` and `read` are synchronous: they wait for the GPU to
+  finish in-flight frames (`paint`'s regions do not).
+- A partial frame redraws only its rectangles but still copies the whole
+  canvas into the swapchain image (a GPU copy of the window, about 2 MB at
+  900x560); the present names only the changed rectangles.
 - Hard failures (a Vulkan error, no usable GPU) end the program with the
   driver's message instead of returning an error value.
 - Under FIFO on XWayland, 600 frames took 4.5 s (about 132 fps on this 120 Hz
@@ -237,8 +267,8 @@ Vulkan types it uses, checked against the Khronos headers by
 
 ## Direction
 
-Next: partial redraws (damage), validation-layer runs, native Wayland
-surfaces, and a wait that covers GPU and window sources together. These are
+Next: validation-layer runs, native Wayland surfaces (with surface damage),
+and a wait that covers GPU and window sources together. These are
 goals, not supported features.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development rules. The API is

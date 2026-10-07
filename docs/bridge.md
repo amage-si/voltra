@@ -22,7 +22,7 @@ lane) fails cleanly. The effects are declared in [native.bend](../native.bend).
 - **No SDK.** Vulkan is reached through `dlopen("libvulkan.so.1")` and
   `vkGetInstanceProcAddr`; no headers or link flags are needed. The bridge
   declares the Vulkan structs it uses (64-bit Linux ABI);
-  `native/abi_check.py` compares their 488 sizes and offsets (68 structs)
+  `native/abi_check.py` compares their 509 sizes and offsets (73 structs)
   with the Khronos headers. `<X11/Xlib.h>` provides the `Display` and
   `Window` types of the Xlib surface create-info.
 - **Arrays without copies.** Effects that take an `Array<U32>` (`vk_write`,
@@ -35,7 +35,7 @@ lane) fails cleanly. The effects are declared in [native.bend](../native.bend).
   full, 95 (ENOTSUP) for a missing loader or an unsupported native window
   kind.
 
-Size: 1,877 lines (1,504 non-blank, non-comment). About 500 of them are the
+Size: 1,940 lines (1,556 non-blank, non-comment). About 500 of them are the
 Vulkan declarations and the entry-point table, about 140 the slot table and
 term helpers, and the rest the 38 effects (each with its `#ifdef` guard and
 registration).
@@ -55,7 +55,7 @@ lists are `List<&2, U32>`.
 | `vk_gpu_name(inst, gpu)` | `vkGetPhysicalDeviceProperties` | → name |
 | `vk_surface(inst, native)` | `vkCreateXlibSurfaceKHR` | `native`: `[kind, Display* high, Display* low, window id, screen]` from Ankra; kind 1 (Xlib) only. → surface slot |
 | `vk_queue_families(inst, gpu, surface)` | queue family properties, `vkGetPhysicalDeviceSurfaceSupportKHR` | → `(flags, count, presents)*` |
-| `vk_device(inst, gpu, family)` | `vkCreateDevice` (one queue, `VK_KHR_swapchain`, dynamic rendering), `vkGetDeviceQueue` | → device slot |
+| `vk_device(inst, gpu, family, flags)` | `vkEnumerateDeviceExtensionProperties` when `flags` asks for an optional extension, `vkCreateDevice` (one queue, `VK_KHR_swapchain`, dynamic rendering), `vkGetDeviceQueue` | Flags bit 0: enable `VK_KHR_incremental_present` if the device offers it. → `[slot, incremental_present_on]` |
 | `vk_memory_types(dev)` | `vkGetPhysicalDeviceMemoryProperties` | → `[count, (flags, heap)*, heaps, (MiB, flags)*]` |
 
 ### Presentation
@@ -66,7 +66,7 @@ lists are `List<&2, U32>`.
 | `vk_swapchain(dev, surface, desc, old)` | `vkCreateSwapchainKHR` | desc `[minImageCount, format, colorSpace, w, h, usage, preTransform, compositeAlpha, presentMode, clipped]`; `old` may be 0. → swapchain slot |
 | `vk_swapchain_images(dev, sc)` | `vkGetSwapchainImagesKHR` | → image slots (owned by the swapchain) |
 | `vk_acquire(dev, sc, semaphore, ms)` | `vkAcquireNextImageKHR` | → `[status, index]`; status 0 ready, 1 suboptimal, 2 out of date, 3 timeout |
-| `vk_present(dev, sc, index, semaphore)` | `vkQueuePresentKHR` | → status 0 presented, 1 suboptimal, 2 out of date |
+| `vk_present(dev, sc, index, semaphore, rects)` | `vkQueuePresentKHR`, with `VkPresentRegionsKHR` chained when `rects` is not empty | `rects`: `(x, y, width, height)*`, at most 64 rectangles that changed since the last present (needs the extension enabled by `vk_device`); the whole image is presented either way. → status 0 presented, 1 suboptimal, 2 out of date |
 
 ### Resources
 
@@ -127,6 +127,7 @@ lists are `List<&2, U32>`.
 | 12 | buffer image x y width height bufferOffset | `vkCmdCopyBufferToImage` into a rectangle (atlas regions) |
 | 13 | image buffer width height bufferOffset | `vkCmdCopyImageToBuffer` (from TRANSFER_SRC layout) |
 | 14 | srcStage dstStage srcAccess dstAccess | `vkCmdPipelineBarrier` with one `VkMemoryBarrier` |
+| 15 | srcImage dstImage x y width height | `vkCmdCopyImage` from TRANSFER_SRC to TRANSFER_DST layout, the same rectangle in both (the canvas into the swapchain image) |
 
 `commands.bend` builds these words from `Cmd` values and checks the
 structural rules (`valid`) before they reach the bridge.

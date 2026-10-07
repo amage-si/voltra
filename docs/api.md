@@ -24,19 +24,21 @@ once.
 | Function | Contract |
 | --- | --- |
 | `open(native, w, h, vsync)` | `IO(Gpu)`. `native` is Ankra's `A.native(win)` words (`[1, Display* high, Display* low, window id, screen]`). Makes the Xlib surface, picks the best Vulkan 1.3+ GPU that presents to it, and builds a `w` x `h` swapchain, the 2D pipeline, two frames in flight and a 1x1 white texture. `vsync` True presents with FIFO; False prefers IMMEDIATE, then MAILBOX. The window stays Ankra's. |
-| `open_offscreen(w, h)` | `IO(Gpu)`. No window: frames are drawn into a `w` x `h` image in the swapchain format (B8G8R8A8), kept for `read`. The size is fixed. |
+| `open_offscreen(w, h)` | `IO(Gpu)`. No window: frames are drawn into a `w` x `h` image in the swapchain format (B8G8R8A8), kept for `read`. `resize` makes it again at a new size. |
 | `describe(g)` | Device and target report as a `String`. |
-| `draw(g, quads, clear)` | `IO(Gpu)`. Clears to `clear` (`0xRRGGBBAA`), draws the quads in list order (later quads on top) in one instanced draw, and presents (offscreen: keeps the image). Rebuilds the swapchain when presentation is out of date or suboptimal. Does nothing while the window has no extent (minimized). |
+| `draw(g, quads, clear)` | `IO(Gpu)`. Clears to `clear` (`0xRRGGBBAA`), draws the quads in list order (later quads on top) in one instanced draw, and presents (offscreen: keeps the image). Rebuilds the swapchain when presentation is out of date or suboptimal. Does nothing while the window has no extent (minimized). The canvas does not see the frame: `kept` becomes False. |
+| `paint(g, words, n, clear, ranges, whole, regions)` | `IO(Gpu)`. Paints a frame on the canvas (see below): `words` holds `n` quads packed as `Q.pack` does (an `Array<U32>`, which may be larger); each `C.Range{x, y, width, height, first, count}` redraws its rectangle with the instances `[first, first + count)`, scissored. `whole` clears the canvas to `clear` first; otherwise the canvas must be `kept`. `regions` (as for `update`) replace texture rectangles first, recorded in this frame's commands: the CPU does not wait for the device. The canvas is then copied into the acquired image and presented, naming the ranges' rectangles when the device enabled `VK_KHR_incremental_present` (offscreen: kept for `read`). |
 | `upload(g, w, h, pixels)` | `IO(Gpu)`. Replaces the texture with a row-major `w` x `h` RGBA8 image (`Array<U32>` of `0xRRGGBBAA` words; the array may be larger). Recreates the texture when the size changes. Synchronous. |
 | `blank(g, w, h)` | `IO(Gpu)`. A new `w` x `h` texture whose contents are undefined until `update` writes rectangles of it: an atlas. |
 | `update(g, regions)` | `IO(Gpu)`. Replaces rectangles of the texture in one transfer and keeps the rest. `Region{x, y, width, height, pixels}`, pixels row-major `0xRRGGBBAA`. Synchronous. |
 | `read(g)` | `IO(Gpu & Array<U32>)`. Offscreen only: the last frame as row-major `0xRRGGBBAA` words (`w` x `h` of them). Synchronous. |
-| `resize(g, w, h)` | `IO(Gpu)`. Records a new window size (Ankra's `Resized`); rebuilds the swapchain when it differs from the current one. |
+| `resize(g, w, h)` | `IO(Gpu)`. Records a new window size (Ankra's `Resized`); rebuilds the swapchain (and its canvas) when it differs from the current one. An offscreen target is made again at the new size. |
 | `invalidate(g)` | Marks the content stale: `pending(g)` becomes True. |
 | `close(g)` | `IO(Report)`. Waits for the GPU, destroys every live native object newest first (children before devices, devices before the instance), and reports. Close Voltra before the window. |
 
 Accessors: `pending(g)` (the target shows stale content; draw again before
-waiting indefinitely), `target_size(g)`, `window_size(g)` and
+waiting indefinitely), `kept(g)` (the canvas holds the last painted picture,
+so `paint` may redraw only part of it), `target_size(g)`, `window_size(g)` and
 `texture_size(g)` (`Size{width, height}`), `drawn(g)` (frames drawn),
 `rebuilds(g)` (swapchains rebuilt), `device(g)`, `swapchain(g)` (slot ids; 0
 means none), `drawable(g)`, `offscreen_target(g)`.
@@ -68,6 +70,36 @@ def draw(win: A.Win, g: V.Gpu) -> IO(Loop.Step<V.Gpu>):
 `examples/quads.bend` and `examples/chromi.bend` contain complete loops.
 Drawing only when stale and otherwise waiting without a deadline is what
 keeps an idle window at zero frames and zero CPU.
+
+## Painting only what changed
+
+Every target has a canvas: an image that keeps the picture from one frame to
+the next. Offscreen, the target image is its own canvas; a swapchain gets a
+canvas in its format and size (when its images can receive copies), which
+every `paint` copies into the acquired image whole. Because the canvas
+keeps its picture, a frame needs to redraw only the rectangles where it
+differs from the last one:
+
+1. Pack, for each changed rectangle, the quads that cover it in drawing
+   order, starting with an opaque background fill of the rectangle (a
+   partial paint loads the canvas, so nothing is cleared for it).
+2. `paint(g, words, n, clear, ranges, False{}, regions)` with one `C.Range`
+   per rectangle and the atlas regions the frame needs (often none). Each range is drawn with the scissor on its rectangle, so
+   pixels outside the ranges keep their last value, and a pixel inside one
+   gets exactly what a whole redraw would give it.
+3. When the canvas does not hold the last picture (`kept(g)` False: a first
+   frame, a new swapchain or size, a minimized window, a frame drawn with
+   `draw`), paint whole: `paint(g, words, n, clear, [C.Range{0, 0, w, h, 0,
+   n}], True{}, regions)`.
+
+The present names the ranges' rectangles (`VK_KHR_incremental_present`),
+so the presentation engine may update only those; the whole image is still
+presented and correct. Chromi's `render` (Chromi `gpu.bend`) does all of
+this for retained frames. Frames in flight share the canvas and the
+texture: each frame's first barrier waits for the previous frame's copy
+out of the canvas, and a frame's texture copies wait for earlier frames to
+finish sampling. The texels travel in the frame's own instance buffer,
+after the instances.
 
 ## Quads
 
@@ -110,8 +142,8 @@ Placement is bookkeeping only; the texels travel with `V.update`.
 `policy.bend` holds the selection rules (`best`, `family`, `graphics`,
 `memory`, `format`, `present_mode`, `image_count`, `extent`, `alpha`),
 `commands.bend` the command list (`Cmd`, `encode`, `valid`, `frame`,
-`upload`, `patch`, `texture_init`, `readback`, `to_render`, `to_present`,
-`to_readback`) and `native.bend` the raw effects documented in
+`paint` with `Range` and `Paint`, `upload`, `patch`, `texture_init`,
+`readback`, `to_render`, `to_present`, `to_readback`) and `native.bend` the raw effects documented in
 [bridge.md](bridge.md). Applications should prefer `gpu.bend`; the lower
 layers are public because Bend modules have no export boundary, and they may
 change.
