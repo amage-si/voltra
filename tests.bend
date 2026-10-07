@@ -155,6 +155,52 @@ def frames3() -> List<&2, V.Frame>:
   [V.Frame{1, 0, 0, V.Buffer{0, 0, 0}, 0}, V.Frame{2, 0, 0, V.Buffer{0, 0, 0}, 0},
    V.Frame{3, 0, 0, V.Buffer{0, 0, 0}, 0}]
 
+def paint_of(rs: List<&2, C.Range>, +whole: Bool, +present: Bool) -> C.Paint:
+  C.Paint{21, 22, 23, 800, 600, 255, 13, 14, 15, 16, 64, 64, rs, whole, present}
+
+def two_ranges() -> List<&2, C.Range>:
+  [C.Range{10, 20, 30, 40, 0, 3}, C.Range{100, 0, 8, 8, 3, 2}]
+
+# The load op of the first render scope (9: none).
+def render_load(cs: List<&2, C.Cmd>) -> U32:
+  match cs:
+    case Nil{}:
+      9
+    case Con{C.Render{v, w, h, l, k}, rest}:
+      l
+    case Con{c, rest}:
+      render_load(rest)
+
+def first_old_layout(cs: List<&2, C.Cmd>) -> U32:
+  match cs:
+    case Nil{}:
+      9
+    case Con{C.Barrier{i, o, n, ss, ds, sa, da}, rest}:
+      o
+    case Con{c, rest}:
+      first_old_layout(rest)
+
+# Scissors and draws, in order, as [x, y, w, h] and [count, first] words.
+def scissored(cs: List<&2, C.Cmd>) -> List<&2, U32>:
+  match cs:
+    case Nil{}:
+      Nil{}
+    case Con{C.Scissor{x, y, w, h}, rest}:
+      x <> y <> w <> h <> scissored(rest)
+    case Con{C.Draw{v, n, fv, fi}, rest}:
+      n <> fi <> scissored(rest)
+    case Con{c, rest}:
+      scissored(rest)
+
+def copies(cs: List<&2, C.Cmd>) -> List<&2, U32>:
+  match cs:
+    case Nil{}:
+      Nil{}
+    case Con{C.CopyImage{a, b, x, y, w, h}, rest}:
+      a <> b <> x <> y <> w <> h <> copies(rest)
+    case Con{c, rest}:
+      copies(rest)
+
 # The bridge accepts a pipeline description of exactly 13 + 3b + 1 + 4a words.
 def desc_ok(+d: List<&2, U32>) -> Bool:
   +nb = W.at(d, 12n)
@@ -265,5 +311,28 @@ def main() -> IO(Unit):
     check(same(V.forget([9, 7, 5], 7), [9, 5]) && same(V.forget([9], 4), [9]), "slots: forget removes only that slot")
     check(same(frame_ids(V.rotate(frames3())), [2, 3, 1]), "frames: rotation after a present")
     check(desc_ok(V.pipeline_desc(44)), "pipeline: description has the bridge's exact length")
+    # commands.bend (painting a retained canvas)
+    check(same(C.encode([C.CopyImage{1, 2, 3, 4, 5, 6}]), [15, 1, 2, 3, 4, 5, 6]) &&
+      Bool.not(C.valid([C.Render{1, 8, 8, 1, 0}, C.CopyImage{1, 2, 0, 0, 8, 8}, C.EndRender{}])),
+      "commands: an image copy is op 15, outside render scopes")
+    check(C.valid(C.paint(paint_of(two_ranges(), False{}, True{}))) &&
+      U32.is_eq(render_load(C.paint(paint_of(two_ranges(), False{}, True{}))), 0) &&
+      U32.is_eq(first_old_layout(C.paint(paint_of(two_ranges(), False{}, True{}))), 6) &&
+      same(scissored(C.paint(paint_of(two_ranges(), False{}, True{}))), [10, 20, 30, 40, 3, 0, 100, 0, 8, 8, 2, 3]) &&
+      same(copies(C.paint(paint_of(two_ranges(), False{}, True{}))), [21, 23, 0, 0, 800, 600]) &&
+      U32.is_eq(last_layout(C.paint(paint_of(two_ranges(), False{}, True{})), 0), 1000001002),
+      "commands: a partial paint loads the kept canvas, scissors each range, copies it out and presents")
+    check(C.valid(C.paint(paint_of([C.Range{0, 0, 800, 600, 0, 5}], True{}, True{}))) &&
+      U32.is_eq(render_load(C.paint(paint_of([C.Range{0, 0, 800, 600, 0, 5}], True{}, True{}))), 1) &&
+      U32.is_eq(first_old_layout(C.paint(paint_of([C.Range{0, 0, 800, 600, 0, 5}], True{}, True{}))), 0),
+      "commands: a whole paint clears the canvas, discarding its old picture")
+    check(C.valid(C.paint(paint_of([], False{}, True{}))) &&
+      U32.is_eq(render_load(C.paint(paint_of([], False{}, True{}))), 9) &&
+      U32.is_eq(W.count(C.encode(C.paint(paint_of([], False{}, True{})))), 23),
+      "commands: nothing to redraw: the kept canvas is only copied out and presented")
+    check(C.valid(C.paint(paint_of(two_ranges(), False{}, False{}))) &&
+      U32.is_eq(last_layout(C.paint(paint_of(two_ranges(), False{}, False{})), 0), 6) &&
+      same(copies(C.paint(paint_of(two_ranges(), False{}, False{}))), []),
+      "commands: an offscreen canvas ends ready for readback, with nothing copied")
     check(same(V.rgba_view(37), [37, 6, 5, 4, 3, 1]), "texture: 0xRRGGBBAA words read through an A,B,G,R swizzle")
-    IO.print("71 Voltra checks passed (Bend-side logic; the GPU path is checked by gpu_tests.bend and the examples)")
+    IO.print("76 Voltra checks passed (Bend-side logic; the GPU path is checked by gpu_tests.bend and the examples)")

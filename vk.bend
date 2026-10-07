@@ -64,6 +64,7 @@ def stage_host() -> U32: 16384
 # VkAccessFlags
 def access_none() -> U32: 0
 def access_shader_read() -> U32: 32
+def access_color_read() -> U32: 128
 def access_color_write() -> U32: 256
 def access_transfer_read() -> U32: 2048
 def access_transfer_write() -> U32: 4096
@@ -100,6 +101,7 @@ def rate_vertex() -> U32: 0
 def rate_instance() -> U32: 1
 
 # VkAttachmentLoadOp, VkCompositeAlphaFlags, VkSurfaceTransformFlags
+def load_load() -> U32: 0
 def load_clear() -> U32: 1
 def composite_opaque() -> U32: 1
 def transform_identity() -> U32: 1

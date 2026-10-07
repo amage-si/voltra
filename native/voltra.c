@@ -376,6 +376,12 @@ typedef struct {
   VkExtent3D imageExtent;
 } VkBufferImageCopy;
 
+typedef struct {
+  VkImageSubresourceLayers srcSubresource; VkOffset3D srcOffset;
+  VkImageSubresourceLayers dstSubresource; VkOffset3D dstOffset;
+  VkExtent3D extent;
+} VkImageCopy;
+
 typedef struct { VkEnum sType; const void* pNext; VkFlags flags; }
   VkSemaphoreCreateInfo, VkFenceCreateInfo;
 
@@ -517,7 +523,9 @@ typedef struct {
   X(void, vkCmdCopyBufferToImage, (VkCommandBuffer, VkHandle, VkHandle, \
     VkEnum, uint32_t, const VkBufferImageCopy*)) \
   X(void, vkCmdCopyImageToBuffer, (VkCommandBuffer, VkHandle, VkEnum, \
-    VkHandle, uint32_t, const VkBufferImageCopy*))
+    VkHandle, uint32_t, const VkBufferImageCopy*)) \
+  X(void, vkCmdCopyImage, (VkCommandBuffer, VkHandle, VkEnum, VkHandle, \
+    VkEnum, uint32_t, const VkImageCopy*))
 
 #define VX_DECL(r, n, a) static r (*n) a;
 VX_FNS(VX_DECL)
@@ -1571,7 +1579,8 @@ static void __attribute__((constructor)) vx_vk_command_buffer_use(void) {
 // 12 region    buffer image x y width height bufferOffset
 // 13 readback  image buffer width height bufferOffset
 // 14 memory    srcStage dstStage srcAccess dstAccess
-static const u8 vx_arity[15] = { 0, 7, 5, 0, 4, 4, 1, 2, 3, 3, 4, 5, 7, 5, 4 };
+// 15 imgcopy   srcImage dstImage x y width height
+static const u8 vx_arity[16] = { 0, 7, 5, 0, 4, 4, 1, 2, 3, 3, 4, 5, 7, 5, 4, 6 };
 
 static Term vx_record(Env e, u32 dev, VkCommandBuffer cb, const u32* k,
   u64 n) {
@@ -1580,7 +1589,7 @@ static Term vx_record(Env e, u32 dev, VkCommandBuffer cb, const u32* k,
   VX_TRY(e, vkBeginCommandBuffer(cb, &bi), "vkBeginCommandBuffer");
   for (u64 i = 0; i < n;) {
     u32 op = k[i];
-    if (op == 0 || op > 14 || i + 1 + vx_arity[op] > n) {
+    if (op == 0 || op > 15 || i + 1 + vx_arity[op] > n) {
       return VX_BAD(e, "command word");
     }
     const u32* a = k + i + 1;
@@ -1673,6 +1682,15 @@ static Term vx_record(Env e, u32 dev, VkCommandBuffer cb, const u32* k,
     } else if (op == 14) {
       VkMemoryBarrier m = { 46, NULL, a[2], a[3] };
       vkCmdPipelineBarrier(cb, a[0], a[1], 0, 1, &m, 0, NULL, 0, NULL);
+    } else if (op == 15) {
+      VxSlot* src = vx_image(a[0]);
+      VxSlot* dst = vx_image(a[1]);
+      if (src == NULL || dst == NULL) {
+        return VX_BAD(e, "image copy operands");
+      }
+      VkImageCopy c = { { 1, 0, 0, 1 }, { (int32_t)a[2], (int32_t)a[3], 0 },
+        { 1, 0, 0, 1 }, { (int32_t)a[2], (int32_t)a[3], 0 }, { a[4], a[5], 1 } };
+      vkCmdCopyImage(cb, src->h, 6, dst->h, 7, 1, &c);
     }
   }
   VX_TRY(e, vkEndCommandBuffer(cb), "vkEndCommandBuffer");
