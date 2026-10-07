@@ -1,10 +1,12 @@
 import Base
+import ./keys.bend as K
 
 # A texture atlas allocator: rectangles packed into shelves (rows), first
 # fit, top to bottom. Pure bookkeeping -- the texels themselves travel with
 # `update` in gpu.bend. Entries are found by a caller-chosen U32 key (a
-# glyph at a size, an image), so content uploaded once is reused by every
-# later frame. A full atlas refuses new entries; the caller then starts a
+# glyph at a size, an image) in a key map (keys.bend), so content uploaded
+# once is reused by every later frame and a lookup costs about log2 of the
+# entry count. A full atlas refuses new entries; the caller then starts a
 # fresh one (`reset`) and uploads what the current frame needs.
 
 type Entry is Data:
@@ -15,37 +17,22 @@ type Shelf is Data:
 
 type Atlas is Data:
   Atlas{width: U32, height: U32, top: U32, shelves: List<&2, Shelf>,
-    entries: List<&2, Entry>}
+    entries: K.Keys<Entry>}
 
 def new(+width: U32, +height: U32) -> Atlas:
-  Atlas{width, height, 0, Nil{}, Nil{}}
+  Atlas{width, height, 0, Nil{}, K.new(Entry)}
 
 def reset(a: Atlas) -> Atlas:
   Atlas{w, h, t, s, e} = a
-  Atlas{w, h, 0, Nil{}, Nil{}}
-
-def find.pick(hit: Bool, e: Entry, later: Unit -> Maybe<&2, Entry>) -> Maybe<&2, Entry>:
-  match hit:
-    case True{}:
-      Some{e}
-    case False{}:
-      later(Unit{})
-
-# Stops at the first entry with the key (the rest is not visited).
-def find(es: List<&2, Entry>, +key: U32) -> Maybe<&2, Entry>:
-  match es:
-    case Nil{}:
-      None{}
-    case Con{Entry{+k, x, y, w, h}, rest}:
-      find.pick(U32.is_eq(k, key), Entry{k, x, y, w, h}, u => find(rest, key))
+  Atlas{w, h, 0, Nil{}, K.new(Entry)}
 
 def lookup(a: Atlas, +key: U32) -> Maybe<&2, Entry>:
   Atlas{w, h, t, s, entries} = a
-  find(entries, key)
+  K.get(Entry, entries, key)
 
 def count(a: Atlas) -> U32:
   Atlas{w, h, t, s, entries} = a
-  U32.from_nat(List.length(&2, Entry, entries))
+  K.size(Entry, entries)
 
 # A shelf fits a rectangle when it is tall enough, not more than twice as
 # tall (so small glyphs do not waste tall rows), and has room to the right.
@@ -75,21 +62,21 @@ def shelf.first(ss: List<&2, Shelf>, +w: U32, +h: U32, +width: U32) -> Placed:
       shelf.join(fits(sh, w, h, width), sh, r, shelf.first(r, w, h, width), w)
 
 def place.new(room: Bool, +width: U32, +height: U32, +top: U32, ss: List<&2, Shelf>,
-  es: List<&2, Entry>, +key: U32, +w: U32, +h: U32) -> Atlas & Maybe<&2, Entry>:
+  es: K.Keys<Entry>, +key: U32, +w: U32, +h: U32) -> Atlas & Maybe<&2, Entry>:
   match room:
     case True{}:
       +e = {Entry{key, 0, top, w, h} : Entry}
       (Atlas{width, height, (top + h : U32), List.append(&2, Shelf, ss, [Shelf{top, h, w}]),
-        e <> es}, Some{e})
+        K.put(Entry, es, key, e)}, Some{e})
     case False{}:
       (Atlas{width, height, top, ss, es}, None{})
 
-def place.found(p: Placed, +width: U32, +height: U32, +top: U32, es: List<&2, Entry>,
+def place.found(p: Placed, +width: U32, +height: U32, +top: U32, es: K.Keys<Entry>,
   +key: U32, +w: U32, +h: U32) -> Atlas & Maybe<&2, Entry>:
   match p:
     case Placed{ss, +x, +y, True{}}:
       +e = {Entry{key, x, y, w, h} : Entry}
-      (Atlas{width, height, top, ss, e <> es}, Some{e})
+      (Atlas{width, height, top, ss, K.put(Entry, es, key, e)}, Some{e})
     case Placed{ss, x, y, False{}}:
       place.new(U32.is_le((top + h : U32), height) && U32.is_le(w, width) && U32.is_gt(w, 0)
         && U32.is_gt(h, 0), width, height, top, ss, es, key, w, h)
