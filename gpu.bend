@@ -314,8 +314,13 @@ def offscreen(+dev: U32, +types: List<&2, U32>, +w: U32, +h: U32,
 # Frames in flight
 # ----------------
 
+# A frame's instance buffer also carries the atlas regions a `paint`
+# uploads, after the instances (it is a vertex and a transfer source).
 type Frame is Data:
   Frame{cmd: U32, fence: U32, acquired: U32, instances: Buffer, quads: U32}
+
+def frame_usage() -> U32:
+  (Vk.buffer_vertex() .|. Vk.buffer_transfer_src() : U32)
 
 def instance_bytes(+quads: U32) -> U32:
   (quads * Q.stride_words() * 4 : U32)
@@ -334,7 +339,7 @@ def frame(+dev: U32, +types: List<&2, U32>, +pool: U32,
     +fence : U32 <- IO.try(U32, N.vk_fence(dev, True{}))
     +acq : U32 <- IO.try(U32, N.vk_semaphore(dev))
     r : Buffer & List<&2, U32> <- host_buffer(dev, types,
-      instance_bytes(initial_quads()), Vk.buffer_vertex(),
+      instance_bytes(initial_quads()), frame_usage(),
       acq <> fence <> cmd <> reg)
     return frame.made(cmd, fence, acq, initial_quads(), fs, r)
 
@@ -751,7 +756,7 @@ def grow.frames(fs: List<&2, Frame>, +g: Gpu, +dev: U32, +types: List<&2, U32>,
       do IO<Gpu>:
         +reg2 : List<&2, U32> <- release([b, m], reg)
         nb : Buffer & List<&2, U32> <- host_buffer(dev, types, instance_bytes(quads),
-          Vk.buffer_vertex(), reg2)
+          frame_usage(), reg2)
         return grow.made(cmd, fence, acq, quads, rest, nb, g)
 
 # Doubles the current frame's instance buffer until `n` quads fit. Called
@@ -933,31 +938,62 @@ def rects.pick(on: Bool, +rs: List<&2, C.Range>) -> List<&2, U32>:
       +ws = rects.of(rs)
       Bool.pick(List<&2, U32>, U32.is_le(W.count(ws), 256), ws, Nil{})
 
+def paint.texels.write(+m: U32, +offset: U32, ws: Array<U32> & U32) -> IO(Unit):
+  (a, n) = ws
+  do IO<Unit>:
+    wr : Array<U32> & Result<&1, &1, U32 & String, Unit> <- N.vk_write(m, offset, a, n)
+    settle(Unit, wr)
+
+# The texels of a paint's atlas regions, written after its n quads.
+def paint.texels(any: Bool, +m: U32, +offset: U32, rs: List<&2, Region>) -> IO(Unit):
+  match any:
+    case False{}:
+      IO.pure(Unit, Unit{})
+    case True{}:
+      paint.texels.write(m, offset, W.to_array(region_words(rs)))
+
+# The regions' copies into the atlas texture, recorded before the frame's
+# drawing: the texture leaves its sampled layout once earlier frames are
+# done reading it (the barrier waits for their fragment stage), so no
+# frame in flight sees a region change and the CPU never waits.
+def paint.uploads(any: Bool, +texture: U32, +buffer: U32, rs: List<&2, Region>, +offset: U32) ->
+  List<&2, C.Cmd>:
+  match any:
+    case False{}:
+      Nil{}
+    case True{}:
+      C.patch(texture, buffer, patches(rs, offset))
+
 def paint.frame(fs: List<&2, Frame>, +g: Gpu, +dev: U32, +sc: U32, +index: U32,
   +acquired: U32, +image: U32, +view: U32, +finished: U32, +canvas: U32, +cview: U32,
   +tw: U32, +th: U32, +clear: U32, +pipe: U32, +layout: U32, +set: U32, +xw: U32, +xh: U32,
-  words: Array<U32>, +n: U32, +ranges: List<&2, C.Range>, +whole: Bool, +hint: Bool) -> IO(Gpu):
+  words: Array<U32>, +n: U32, +ranges: List<&2, C.Range>, +whole: Bool, +hint: Bool,
+  +texture: U32, +rs: List<&2, Region>) -> IO(Gpu):
   match fs:
     case Nil{}:
       IO.die(Gpu, 1, "Voltra: no frame in flight")
     case Con{Frame{+cmd, +fence, +acq, Buffer{+b, +m, bytes}, cap}, rest}:
       +off = offscreen_target(g)
       +direct = U32.is_eq(canvas, 0)
+      +any = Bool.not(List.is_empty(&2, Region, rs))
+      +at = (n * Q.stride_words() * 4 : U32)
       do IO<Gpu>:
         wr : Array<U32> & Result<&1, &1, U32 & String, Unit> <- N.vk_write(m, 0, words,
           (n * Q.stride_words() : U32))
         settle(Unit, wr)
-        ops : Array<U32> & U32 <- checked(paint.commands(direct,
-          C.Paint{canvas, cview, image, tw, th, clear, pipe, layout, set, b, xw, xh, ranges, whole,
-            Bool.not(off)},
-          C.Pass{image, view, tw, th, clear, pipe, layout, set, b, n, xw, xh, Bool.not(off)}))
+        paint.texels(any, m, at, rs)
+        ops : Array<U32> & U32 <- checked(List.append(&2, C.Cmd, paint.uploads(any, texture, b, rs, at),
+          paint.commands(direct,
+            C.Paint{canvas, cview, image, tw, th, clear, pipe, layout, set, b, xw, xh, ranges, whole,
+              Bool.not(off)},
+            C.Pass{image, view, tw, th, clear, pipe, layout, set, b, n, xw, xh, Bool.not(off)})))
         record(cmd, ops)
         submit.target(off, with_kept(g, Bool.not(direct)), dev, cmd, acq, fence, sc, index,
           finished, acquired, Bool.pick(U32, direct, Vk.stage_color_output(), Vk.stage_transfer()),
           rects.pick(hint && Bool.not(whole) && Bool.not(direct), ranges))
 
 def paint.submit(+g: Gpu, +index: U32, +acquired: U32, words: Array<U32>, +n: U32,
-  +clear: U32, ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
+  +clear: U32, ranges: List<&2, C.Range>, +whole: Bool, rs: List<&2, Region>) -> IO(Gpu):
   Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
   Core{inst, layer, gpu, name, surf, +dev, family, types, sa, sl, pool, +set, +layout, +pipe, cp, uc, uf, vs} = core
   Target{+sc, fmt, +tw, +th, +images, +views, +done, m, +c} = t
@@ -965,61 +1001,78 @@ def paint.submit(+g: Gpu, +index: U32, +acquired: U32, words: Array<U32>, +n: U3
   +i = U32.to_nat(index)
   paint.frame(fs, g, dev, sc, index, acquired, W.at(images, i), W.at(views, i), W.at(done, i),
     canvas.image(c), canvas.view(c), tw, th, clear, pipe, layout, set, xw, xh, words, n, ranges, whole,
-    P.gpu.regions(gpu))
+    P.gpu.regions(gpu), img, rs)
+
+# Texels of the regions, and the quads they occupy after the instances.
+def texels(rs: List<&2, Region>, +acc: U32) -> U32:
+  match rs:
+    case Nil{}:
+      acc
+    case Con{Region{x, y, +w, +h, px}, rest}:
+      texels(rest, (acc + w * h : U32))
 
 def paint.acquired(ok: Bool, +g: Gpu, +index: U32, +status: U32, words: Array<U32>, +n: U32,
-  +clear: U32, ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
+  +clear: U32, ranges: List<&2, C.Range>, +whole: Bool, +rs: List<&2, Region>) -> IO(Gpu):
   match ok:
     case False{}:
-      # Out of date or timed out: rebuild; the next paint is whole.
-      retarget(g)
+      # Out of date or timed out: rebuild (the next paint is whole); the
+      # atlas regions still go to the texture.
+      do IO<Gpu>:
+        +g1 : Gpu <- retarget(g)
+        update(g1, rs)
     case True{}:
       +fs = frames_of(g)
+      +need = (n + (texels(rs, 0) + Q.stride_words() - 1) / Q.stride_words() : U32)
       do IO<Gpu>:
         +reset : U32 <- IO.try(U32, N.vk_wait(device(g), W.at(frame_sync(fs), 0n), 0, True{}))
-        +g2 : Gpu <- grow(U32.is_gt(n, head_capacity(fs)), g, n)
-        paint.submit(g2, index, status, words, n, clear, ranges, whole)
+        +g2 : Gpu <- grow(U32.is_gt(need, head_capacity(fs)), g, need)
+        paint.submit(g2, index, status, words, n, clear, ranges, whole, rs)
 
 def paint.go(off: Bool, +g: Gpu, +sync: List<&2, U32>, words: Array<U32>, +n: U32, +clear: U32,
-  ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
+  ranges: List<&2, C.Range>, +whole: Bool, +rs: List<&2, Region>) -> IO(Gpu):
   match off:
     case True{}:
       do IO<Gpu>:
         +waited : U32 <- IO.try(U32, N.vk_wait(device(g), W.at(sync, 0n), 10000, False{}))
-        paint.acquired(True{}, g, 0, 0, words, n, clear, ranges, whole)
+        paint.acquired(True{}, g, 0, 0, words, n, clear, ranges, whole, rs)
     case False{}:
       do IO<Gpu>:
         +waited : U32 <- IO.try(U32, N.vk_wait(device(g), W.at(sync, 0n), 10000, False{}))
         +a : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_acquire(device(g), swapchain(g),
           W.at(sync, 1n), 10000))
         paint.acquired(U32.is_le(W.at(a, 0n), 1), g, W.at(a, 1n), W.at(a, 0n), words, n, clear,
-          ranges, whole)
+          ranges, whole, rs)
 
 def paint.ready(ok: Bool, fits: Bool, +g: Gpu, words: Array<U32>, +n: U32, +clear: U32,
-  ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
+  ranges: List<&2, C.Range>, +whole: Bool, +rs: List<&2, Region>) -> IO(Gpu):
   match ok fits:
     case False{} _:
       # Minimized (no swapchain): nothing to draw into, and the canvas no
-      # longer follows the picture.
-      IO.pure(Gpu, settled(with_kept(g, False{})))
+      # longer follows the picture; the atlas regions still go to the
+      # texture. Nothing is pending until a resize restores the window.
+      do IO<Gpu>:
+        +g1 : Gpu <- update(with_kept(g, False{}), rs)
+        return settled(g1)
     case True{} False{}:
       IO.die(Gpu, 1, "Voltra: paint: a canvas without the last picture must be painted whole")
     case True{} True{}:
-      paint.go(offscreen_target(g), g, frame_sync(frames_of(g)), words, n, clear, ranges, whole)
+      paint.go(offscreen_target(g), g, frame_sync(frames_of(g)), words, n, clear, ranges, whole, rs)
 
 # Paints a frame over the canvas, which keeps the picture between frames:
 # `words` holds `n` quads packed as Q.pack does (the array may be larger),
 # and each range redraws its rectangle with its instances, scissored, so
 # the rest of the picture stays as it was; `whole` clears the canvas to
-# `clear` first (use one range over the whole target). The canvas is then
-# copied into the acquired swapchain image and presented or, offscreen,
-# kept for `read`. A canvas that does not hold the last painted picture
-# (`kept` False: a new target or size, a frame drawn with `draw`, a lost
-# frame) must be painted whole. Without a canvas every paint draws its
-# quads whole into the image, in order.
+# `clear` first (use one range over the whole target). `rs` are texture
+# rectangles to replace first, as `update` does but inside this frame,
+# without waiting for the device. The canvas is then copied into the
+# acquired swapchain image and presented or, offscreen, kept for `read`. A
+# canvas that does not hold the last painted picture (`kept` False: a new
+# target or size, a frame drawn with `draw`, a lost frame) must be painted
+# whole. Without a canvas every paint draws its quads whole into the
+# image, in order.
 def paint(+g: Gpu, words: Array<U32>, +n: U32, +clear: U32, ranges: List<&2, C.Range>,
-  +whole: Bool) -> IO(Gpu):
-  paint.ready(drawable(g), whole || kept(g), g, words, n, clear, ranges, whole)
+  +whole: Bool, +rs: List<&2, Region>) -> IO(Gpu):
+  paint.ready(drawable(g), whole || kept(g), g, words, n, clear, ranges, whole, rs)
 
 # Readback
 # --------

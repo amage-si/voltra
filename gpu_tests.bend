@@ -318,7 +318,31 @@ def painted(+g: V.Gpu, qs: List<&2, Q.Quad>, ranges: List<&2, C.Range>, +whole: 
   +ws = Q.pack(qs)
   do IO<V.Gpu & Array<U32>>:
     +g1 : V.Gpu <- V.paint(g, V.first(W.to_array(ws)), (W.count(ws) / Q.stride_words() : U32),
-      background(), ranges, whole)
+      background(), ranges, whole, Nil{})
+    V.read(g1)
+
+# A 16x16 texture region of one color, uploaded inside a partial paint and
+# drawn there by an image quad at (40, 40) over scene B.
+def stamp_color() -> U32:
+  2864434431
+
+def stamp.texels(n: Nat) -> List<&2, U32>:
+  match n:
+    case 0n:
+      Nil{}
+    case 1n+p:
+      stamp_color() <> stamp.texels(p)
+
+def uploaded.expected(at: U32) -> U32:
+  +i = at
+  Bool.pick(U32, inside((i % 256 : U32), (i / 256 : U32), 40, 40, 56, 56), stamp_color(), flat.b.expected(i))
+
+def painted.with(+g: V.Gpu, qs: List<&2, Q.Quad>, ranges: List<&2, C.Range>, +whole: Bool,
+  rs: List<&2, V.Region>) -> IO(V.Gpu & Array<U32>):
+  +ws = Q.pack(qs)
+  do IO<V.Gpu & Array<U32>>:
+    +g1 : V.Gpu <- V.paint(g, V.first(W.to_array(ws)), (W.count(ws) / Q.stride_words() : U32),
+      background(), ranges, whole, rs)
     V.read(g1)
 
 def report.of(d: Diff, +total: U32, name: String) -> IO(Unit):
@@ -345,7 +369,12 @@ def canvas(+g0: V.Gpu) -> IO(V.Gpu):
     +g2 : V.Gpu <- diffed(~flat.b.expected, r2,
       "paint: redrawing only the changed box over the kept picture equals the new frame drawn whole")
     r3 : V.Gpu & Array<U32> <- painted(g2, [], [], False{})
-    +g3 : V.Gpu <- diffed(~flat.b.expected, r3, "paint: with nothing to redraw the picture stays")
+    +g3a : V.Gpu <- diffed(~flat.b.expected, r3, "paint: with nothing to redraw the picture stays")
+    r3b : V.Gpu & Array<U32> <- painted.with(g3a, [Q.fill(40, 40, 16, 16, background()),
+      Q.image(40, 40, 16, 16, 0, 0, 16, 16, white())], [C.Range{40, 40, 16, 16, 0, 2}], False{},
+      [V.Region{0, 0, 16, 16, stamp.texels(256n)}])
+    +g3 : V.Gpu <- diffed(~uploaded.expected, r3b,
+      "paint: a texture region uploaded inside a partial paint is drawn by that paint")
     +g4 : V.Gpu <- V.resize(g3, 128, 96)
     check(Bool.not(V.kept(g4)), "resize: an offscreen target made again at a new size holds no picture")
     r4 : V.Gpu & Array<U32> <- painted(g4, flat.quads(), [C.Range{0, 0, 128, 96, 0, 4}], True{})
