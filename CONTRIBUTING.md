@@ -14,6 +14,8 @@ export BEND_NO_TELEMETRY=1
 mkdir -p build
 bend tests.bend -o build/tests
 ./build/tests --threads 2 --gpu off
+bend keys_tests.bend -o build/keys_tests
+./build/keys_tests --threads 2 --gpu off
 bend gpu_tests.bend -o build/gpu_tests
 ./build/gpu_tests --threads 2 --gpu off
 bend examples/quads.bend -o build/quads

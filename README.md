@@ -41,7 +41,12 @@ Chromi's integrated demo (`examples/eco`) draws whole frames through Voltra's
   rules produces the same bytes. Straight-alpha source-over blending in
   encoded sRGB, as Chromi's CPU composition.
 - Textures: whole-image uploads, blank textures with rectangle updates in one
-  transfer (`update`), and an atlas allocator (`atlas.bend`, shelves, keys).
+  transfer (`update`), and an atlas allocator (`atlas.bend`, shelves; entries
+  found by key in a persistent map, `keys.bend`).
+- `keys.bend`: a persistent map from U32 keys to Data values (big-endian
+  Patricia trie): lookups follow one branch per distinguishing bit and only
+  borrow the map, `put`/`del` rebuild one path. The atlas and Chromi's demo
+  text use it; any caller may.
 - Offscreen targets and readback (`open_offscreen`, `read`), for pixel tests.
 - Two frames in flight with per-frame fences, semaphores, command buffers and
   growable instance buffers.
@@ -54,6 +59,10 @@ How it was verified on the development machine:
   command encoding and validation (patches, readback, memory barriers),
   quad packing including clips and signed eighths, quadtree conversion,
   atlas packing, readback conversion and slot tracking. No display or GPU.
+- **11 key map checks** (`keys_tests.bend`): random puts, removals and
+  lookups against a reference list (2 x 3000 operations), edge keys across
+  the high bit, ascending order, persistence of older versions, and the
+  depth of 450 atlas-style keys (13).
 - **7 GPU checks** (`gpu_tests.bend`, offscreen, no display): each quad kind
   drawn and read back, compared pixel by pixel with values computed in Bend
   by the shader's integer rules: flat quads with clips and translucency;
@@ -212,7 +221,8 @@ Vulkan types it uses, checked against the Khronos headers by
 | --- | --- |
 | [gpu.bend](gpu.bend) | Context, swapchain or offscreen target, frames, textures, draw, readback, teardown. |
 | [quads.bend](quads.bend) | The 2D quad kinds, instance packing, quadtree leaves and rasterization. |
-| [atlas.bend](atlas.bend) | Texture atlas allocator: shelves and keys. |
+| [atlas.bend](atlas.bend) | Texture atlas allocator: shelves, entries by key. |
+| [keys.bend](keys.bend), [keys_tests.bend](keys_tests.bend) | Persistent U32-keyed map and its checks. |
 | [policy.bend](policy.bend) | GPU, queue, memory, format, present-mode and extent choices. |
 | [commands.bend](commands.bend) | Command list, encoding, validation and barrier policy. |
 | [words.bend](words.bend), [vk.bend](vk.bend) | Word helpers and named Vulkan values. |
