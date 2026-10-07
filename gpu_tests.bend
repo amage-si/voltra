@@ -2,6 +2,7 @@ import Base
 import ./gpu.bend as V
 import ./quads.bend as Q
 import ./words.bend as W
+import ./commands.bend as C
 
 # GPU checks, offscreen: every kind of quad is drawn into a 256x256 target,
 # read back, and compared pixel by pixel with values computed here in Bend
@@ -287,6 +288,69 @@ def diffed(~expected: U32 -> U32, r: V.Gpu & Array<U32>, name: String) -> IO(V.G
     report(compare(~expected, 65536n, Array.get(U32, a, 0), 0, Diff{0, 0}), name)
     return g
 
+# Painting the canvas
+# -------------------
+
+# Scene B: scene A (flat.quads) with its first quad in another color.
+def flat.b() -> List<&2, Q.Quad>:
+  [Q.fill(10, 10, 100, 60, 65535),
+   Q.clipped(Q.fill(0, 0, 256, 256, 16711808), 40, 20, 200, 90),
+   Q.fill(4294967286, 200, 30, 30, 65535),
+   Q.clipped(Q.fill(120, 120, 120, 120, 2155905152), 0, 0, 180, 256)]
+
+def flat.b.expected(at: U32) -> U32:
+  +i = at
+  +x = (i % 256 : U32)
+  +y = (i / 256 : U32)
+  +c0 = background()
+  +c1 = layer(inside(x, y, 10, 10, 110, 70), 65535, c0)
+  +c2 = layer(inside(x, y, 40, 20, 200, 90), 16711808, c1)
+  +c3 = layer(inside(x, y, 0, 200, 20, 230), 65535, c2)
+  layer(inside(x, y, 120, 120, 180, 240), 2155905152, c3)
+
+# Scene A on a 128x96 target.
+def small.expected(at: U32) -> U32:
+  +i = at
+  flat.expected(((i % 128 : U32) + (i / 128 : U32) * 256 : U32))
+
+def painted(+g: V.Gpu, qs: List<&2, Q.Quad>, ranges: List<&2, C.Range>, +whole: Bool) ->
+  IO(V.Gpu & Array<U32>):
+  +ws = Q.pack(qs)
+  do IO<V.Gpu & Array<U32>>:
+    +g1 : V.Gpu <- V.paint(g, V.first(W.to_array(ws)), (W.count(ws) / Q.stride_words() : U32),
+      background(), ranges, whole)
+    V.read(g1)
+
+def report.of(d: Diff, +total: U32, name: String) -> IO(Unit):
+  Diff{+n, +w} = d
+  check(U32.is_eq(n, 0), name ++ ": " ++ U32.show(n) ++ " of " ++ U32.show(total) ++
+    " pixels differ, max channel difference " ++ U32.show(w))
+
+def diffed.of(~expected: U32 -> U32, r: V.Gpu & Array<U32>, +n: Nat, name: String) -> IO(V.Gpu):
+  (+g, a) = r
+  do IO<V.Gpu>:
+    report.of(compare(~expected, n, Array.get(U32, a, 0), 0, Diff{0, 0}), U32.from_nat(n), name)
+    return g
+
+# Scene A painted whole, then B painted only where it differs (the first
+# quad's box: the background, then every quad of B, scissored), then
+# nothing at all: each readback must equal B drawn whole. Last, a new size.
+def canvas(+g0: V.Gpu) -> IO(V.Gpu):
+  do IO<V.Gpu>:
+    r1 : V.Gpu & Array<U32> <- painted(g0, flat.quads(), [C.Range{0, 0, 256, 256, 0, 4}], True{})
+    +g1 : V.Gpu <- diffed(~flat.expected, r1, "paint: a whole paint equals the drawn frame")
+    check(V.kept(g1), "paint: the canvas keeps the painted picture")
+    r2 : V.Gpu & Array<U32> <- painted(g1, Q.fill(10, 10, 100, 60, background()) <> flat.b(),
+      [C.Range{10, 10, 100, 60, 0, 5}], False{})
+    +g2 : V.Gpu <- diffed(~flat.b.expected, r2,
+      "paint: redrawing only the changed box over the kept picture equals the new frame drawn whole")
+    r3 : V.Gpu & Array<U32> <- painted(g2, [], [], False{})
+    +g3 : V.Gpu <- diffed(~flat.b.expected, r3, "paint: with nothing to redraw the picture stays")
+    +g4 : V.Gpu <- V.resize(g3, 128, 96)
+    check(Bool.not(V.kept(g4)), "resize: an offscreen target made again at a new size holds no picture")
+    r4 : V.Gpu & Array<U32> <- painted(g4, flat.quads(), [C.Range{0, 0, 128, 96, 0, 4}], True{})
+    diffed.of(~small.expected, r4, 12288n, "resize: a whole paint at 128x96")
+
 def run(+g0: V.Gpu) -> IO(V.Gpu):
   do IO<V.Gpu>:
     r1 : V.Gpu & Array<U32> <- frame(g0, flat.quads(), background())
@@ -303,7 +367,8 @@ def run(+g0: V.Gpu) -> IO(V.Gpu):
     r6 : V.Gpu & Array<U32> <- frame(g6, round.quads(), bg_a())
     +g7 : V.Gpu <- diffed(~round.expected, r6, "rounded boxes and rings, 4x4 samples")
     r7 : V.Gpu & Diff <- sweep(86n, 0, (g7, Diff{0, 0}))
-    swept(r7)
+    +g8 : V.Gpu <- swept(r7)
+    canvas(g8)
 
 def main() -> IO(Unit):
   do IO<Unit>:

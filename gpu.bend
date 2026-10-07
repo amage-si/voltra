@@ -154,12 +154,25 @@ def texture(+dev: U32, +types: List<&2, U32>, +w: U32, +h: U32,
 # Swapchain or offscreen target
 # -----------------------------
 
-# A swapchain target has a swapchain, its images and views, and one
-# render-finished semaphore per image. An offscreen target has swapchain 0,
-# one image (owned, with `memory`) and no semaphores.
+# The canvas: an image that keeps the last painted picture from one frame
+# to the next (see `paint`), and whether it holds it (`kept`). Offscreen,
+# the target image is its own canvas (memory 0: the target owns it). A
+# swapchain gets a canvas of its own, in its format and size, copied into
+# the acquired image every frame; image 0 means none (the surface cannot
+# take copies), and every frame is then drawn whole into the image.
+type Canvas is Data:
+  Canvas{image: U32, view: U32, memory: U32, kept: Bool}
+
+# A swapchain target has a swapchain, its images and views, one
+# render-finished semaphore per image and a canvas. An offscreen target has
+# swapchain 0, one image (owned, with `memory`) and no semaphores.
 type Target is Data:
   Target{swapchain: U32, format: U32, width: U32, height: U32,
-    images: List<&2, U32>, views: List<&2, U32>, done: List<&2, U32>, memory: U32}
+    images: List<&2, U32>, views: List<&2, U32>, done: List<&2, U32>, memory: U32,
+    canvas: Canvas}
+
+def no_canvas() -> Canvas:
+  Canvas{0, 0, 0, False{}}
 
 def views(+dev: U32, +fmt: U32, images: List<&2, U32>) -> IO(List<&2, U32>):
   match images:
@@ -181,52 +194,73 @@ def semaphores(n: Nat, +dev: U32) -> IO(List<&2, U32>):
         +ss : List<&2, U32> <- semaphores(p, dev)
         return s <> ss
 
-def target.made(+sc: U32, +fmt: U32, +w: U32, +h: U32, +dev: U32,
-  +images: List<&2, U32>, reg: List<&2, U32>) -> IO(Target & List<&2, U32>):
+def target.canvas(+sc: U32, +fmt: U32, +w: U32, +h: U32, +images: List<&2, U32>,
+  +vs: List<&2, U32>, +ds: List<&2, U32>, t: Texture & List<&2, U32>) -> Target & List<&2, U32>:
+  (tex, reg) = t
+  Texture{img, mem, view, tw, th} = tex
+  (Target{sc, fmt, w, h, images, vs, ds, 0, Canvas{img, view, mem, False{}}}, reg)
+
+def target.drawn(copies: Bool, +sc: U32, +fmt: U32, +w: U32, +h: U32, +dev: U32,
+  +types: List<&2, U32>, +images: List<&2, U32>, +vs: List<&2, U32>, +ds: List<&2, U32>,
+  reg: List<&2, U32>) -> IO(Target & List<&2, U32>):
+  match copies:
+    case False{}:
+      IO.pure(Target & List<&2, U32>, (Target{sc, fmt, w, h, images, vs, ds, 0, no_canvas()}, reg))
+    case True{}:
+      do IO<Target & List<&2, U32>>:
+        c : Texture & List<&2, U32> <- image(dev, types, w, h, fmt,
+          (Vk.image_color_attachment() .|. Vk.image_transfer_src() : U32), plain_view(fmt), reg)
+        return target.canvas(sc, fmt, w, h, images, vs, ds, c)
+
+def target.made(+copies: Bool, +sc: U32, +fmt: U32, +w: U32, +h: U32, +dev: U32,
+  +types: List<&2, U32>, +images: List<&2, U32>, reg: List<&2, U32>) -> IO(Target & List<&2, U32>):
   do IO<Target & List<&2, U32>>:
     +vs : List<&2, U32> <- views(dev, fmt, images)
     +ds : List<&2, U32> <- semaphores(List.length(&2, U32, images), dev)
-    return (Target{sc, fmt, w, h, images, vs, ds, 0},
+    target.drawn(copies, sc, fmt, w, h, dev, types, images, vs, ds,
       List.append(&2, U32, ds, List.append(&2, U32, vs,
         List.append(&2, U32, images, sc <> reg))))
 
-def target.build(empty: Bool, +dev: U32, +surface: U32, +desc: List<&2, U32>,
-  +old: U32, +fmt: U32, +w: U32, +h: U32, reg: List<&2, U32>) -> IO(Target & List<&2, U32>):
+def target.build(empty: Bool, +copies: Bool, +dev: U32, +types: List<&2, U32>, +surface: U32,
+  +desc: List<&2, U32>, +old: U32, +fmt: U32, +w: U32, +h: U32,
+  reg: List<&2, U32>) -> IO(Target & List<&2, U32>):
   match empty:
     case True{}:
       # A minimized window has no extent: no swapchain until it returns.
-      IO.pure(Target & List<&2, U32>, (Target{0, fmt, 0, 0, [], [], [], 0}, reg))
+      IO.pure(Target & List<&2, U32>, (Target{0, fmt, 0, 0, [], [], [], 0, no_canvas()}, reg))
     case False{}:
       do IO<Target & List<&2, U32>>:
         +sc : U32 <- IO.try(U32, N.vk_swapchain(dev, surface, desc, old))
         +images : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_swapchain_images(dev, sc))
-        target.made(sc, fmt, w, h, dev, images, reg)
+        target.made(copies, sc, fmt, w, h, dev, types, images, reg)
 
-def target.sized(+dev: U32, +surface: U32, +vsync: Bool, +old: U32,
+# Swapchain images take copies from the canvas when the surface allows it.
+def target.sized(+dev: U32, +types: List<&2, U32>, +surface: U32, +vsync: Bool, +old: U32,
   s: P.Surface, size: U32 & U32, reg: List<&2, U32>) -> IO(Target & List<&2, U32>):
-  P.Surface{+mn, +mx, cw, ch, lw, lh, hw, hh, tr, +cur, +alpha, us, +fs, +modes} = s
+  P.Surface{+mn, +mx, cw, ch, lw, lh, hw, hh, tr, +cur, +alpha, +us, +fs, +modes} = s
   (+w, +h) = size
   +fmt = P.format(fs)
-  target.build(U32.is_eq(w, 0) || U32.is_eq(h, 0), dev, surface,
+  +copies = U32.is_ne((us .&. Vk.image_transfer_dst() : U32), 0)
+  target.build(U32.is_eq(w, 0) || U32.is_eq(h, 0), copies, dev, types, surface,
     [P.image_count(mn, mx), fmt, Vk.srgb_nonlinear(), w, h,
-      Vk.image_color_attachment(), cur, P.alpha(alpha),
-      P.present_mode(modes, vsync), 1], old, fmt, w, h, reg)
+      (Vk.image_color_attachment() .|. Bool.pick(U32, copies, Vk.image_transfer_dst(), 0) : U32),
+      cur, P.alpha(alpha), P.present_mode(modes, vsync), 1], old, fmt, w, h, reg)
 
-def target.info(+dev: U32, +surface: U32, +vsync: Bool, +old: U32,
+def target.info(+dev: U32, +types: List<&2, U32>, +surface: U32, +vsync: Bool, +old: U32,
   +info: List<&2, U32>, +ww: U32, +wh: U32, reg: List<&2, U32>) -> IO(Target & List<&2, U32>):
   +s = P.surface(info)
-  target.sized(dev, surface, vsync, old, s, P.extent(s, ww, wh), reg)
+  target.sized(dev, types, surface, vsync, old, s, P.extent(s, ww, wh), reg)
 
-def target(+dev: U32, +surface: U32, +vsync: Bool, +old: U32, +ww: U32,
+def target(+dev: U32, +types: List<&2, U32>, +surface: U32, +vsync: Bool, +old: U32, +ww: U32,
   +wh: U32, reg: List<&2, U32>) -> IO(Target & List<&2, U32>):
   do IO<Target & List<&2, U32>>:
     +info : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_surface_info(dev, surface))
-    target.info(dev, surface, vsync, old, info, ww, wh, reg)
+    target.info(dev, types, surface, vsync, old, info, ww, wh, reg)
 
 def offscreen.made(t: Texture & List<&2, U32>, +fmt: U32) -> Target & List<&2, U32>:
   (tex, reg) = t
-  Texture{img, mem, view, w, h} = tex
-  (Target{0, fmt, w, h, [img], [view], [], mem}, reg)
+  Texture{+img, mem, +view, w, h} = tex
+  (Target{0, fmt, w, h, [img], [view], [], mem, Canvas{img, view, 0, False{}}}, reg)
 
 def offscreen(+dev: U32, +types: List<&2, U32>, +w: U32, +h: U32,
   reg: List<&2, U32>) -> IO(Target & List<&2, U32>):
@@ -316,7 +350,7 @@ def describe(g: Gpu) -> String:
   Gpu{core, target, fs, tex, st, rb, reg, w, h, p, d, r} = g
   Core{inst, +layer, gpu, +name, +surf, dev, +family, ty, sa, sl, po, se, la, pi, cp, uc, uf, vs} = core
   P.Gpu{+index, +kind, +vendor, +device, +api, driver, +max_image, +local} = gpu
-  Target{sc, +fmt, +tw, +th, +images, vi, dn, mem} = target
+  Target{sc, +fmt, +tw, +th, +images, vi, dn, mem, Canvas{+canvas, cv, cm, kept}} = target
   "GPU " ++ U32.show(index) ++ ": " ++ name ++ " (" ++ P.kind_name(kind) ++
     ", vendor " ++ U32.show(vendor) ++ ", device " ++ U32.show(device) ++
     ", Vulkan " ++ P.api_show(api) ++ ", " ++ U32.show(local) ++
@@ -325,6 +359,7 @@ def describe(g: Gpu) -> String:
     Bool.pick(String, U32.is_eq(surf, 0), "offscreen ", "swapchain ") ++
     U32.show(tw) ++ "x" ++ U32.show(th) ++ ", format " ++ U32.show(fmt) ++ ", " ++
     U32.show(W.count(images)) ++ " images, " ++
+    Bool.pick(String, U32.is_eq(canvas, 0), "no canvas", "retained canvas") ++ ", " ++
     U32.show(U32.from_nat(frames_in_flight())) ++ " frames in flight, validation layer " ++
     Bool.pick(String, U32.is_eq(layer, 1), "on", "off (not installed)")
 
@@ -356,13 +391,13 @@ def offscreen_target(g: Gpu) -> Bool:
 
 def swapchain(g: Gpu) -> U32:
   Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
-  Target{sc, fmt, tw, th, i, v, dn, m} = t
+  Target{sc, fmt, tw, th, i, v, dn, m, c} = t
   sc
 
 # Whether there is anything to draw into: a swapchain, or an offscreen image.
 def drawable(g: Gpu) -> Bool:
   Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
-  Target{sc, fmt, +tw, +th, i, v, dn, m} = t
+  Target{sc, fmt, +tw, +th, i, v, dn, m, c} = t
   U32.is_ne(tw, 0) && U32.is_ne(th, 0)
 
 def pending(g: Gpu) -> Bool:
@@ -379,8 +414,21 @@ def rebuilds(g: Gpu) -> U32:
 
 def target_size(g: Gpu) -> Size:
   Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
-  Target{sc, fmt, tw, th, i, v, dn, m} = t
+  Target{sc, fmt, tw, th, i, v, dn, m, c} = t
   Size{tw, th}
+
+# Whether the canvas holds the last painted picture, so that `paint` may
+# redraw only parts of it.
+def kept(g: Gpu) -> Bool:
+  Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
+  Target{sc, fmt, tw, th, i, v, dn, m, Canvas{+ci, cv, cm, k}} = t
+  k && U32.is_ne(ci, 0)
+
+def with_kept(g: Gpu, +k: Bool) -> Gpu:
+  Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
+  Target{sc, fmt, tw, th, i, v, dn, m, Canvas{ci, cv, cm, old}} = t
+  Gpu{core, Target{sc, fmt, tw, th, i, v, dn, m, Canvas{ci, cv, cm, k}}, fs, tex, st, rb, reg, w, h,
+    p, d, r}
 
 def window_size(g: Gpu) -> Size:
   Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
@@ -439,17 +487,34 @@ def retarget.swap(core: Core, t: Target & List<&2, U32>, old: List<&2, U32>,
     return Gpu{core, target, fs, tex, st, rb, reg2, w, h, True{}, d, (r + 1 : U32)}
 
 # Builds a swapchain for the current window size from the old one, then
-# destroys the old swapchain and everything made for it.
+# destroys the old swapchain and everything made for it (its canvas too:
+# the new one does not hold a picture yet).
 def retarget(g: Gpu) -> IO(Gpu):
   Gpu{+core, tg, fs, tex, st, rb, reg, +w, +h, p, d, r} = g
-  Core{inst, layer, gpu, name, +surf, +dev, family, types, sa, sl, pool, set, la, pi, cp, uc, uf, +vsync} = core
-  Target{+sc, fmt, tw, th, +images, +views, +done, m} = tg
+  Core{inst, layer, gpu, name, +surf, +dev, family, +types, sa, sl, pool, set, la, pi, cp, uc, uf, +vsync} = core
+  Target{+sc, fmt, tw, th, +images, +views, +done, m, Canvas{+ci, +cv, +cm, k}} = tg
   do IO<Gpu>:
     IO.try(Unit, N.vk_idle(dev))
-    t : Target & List<&2, U32> <- target(dev, surf, vsync, sc, w, h, reg)
-    retarget.swap(core, t, drop_none(List.append(&2, U32, done,
+    t : Target & List<&2, U32> <- target(dev, types, surf, vsync, sc, w, h, reg)
+    retarget.swap(core, t, drop_none(cv <> cm <> ci <> List.append(&2, U32, done,
       List.append(&2, U32, views, List.append(&2, U32, images, [sc])))),
       fs, tex, st, rb, w, h, d, r)
+
+def reimage.made(core: Core, t: Target & List<&2, U32>, fs: List<&2, Frame>, tex: Texture,
+  st: Buffer, rb: Buffer, +w: U32, +h: U32, +d: U32, +r: U32) -> Gpu:
+  (target, reg) = t
+  Gpu{core, target, fs, tex, st, rb, reg, w, h, True{}, d, (r + 1 : U32)}
+
+# Makes an offscreen target again at the recorded size; its picture is lost.
+def reimage(g: Gpu) -> IO(Gpu):
+  Gpu{+core, tg, fs, tex, st, rb, reg, +w, +h, p, d, r} = g
+  Core{inst, layer, gpu, name, surf, +dev, family, +types, sa, sl, pool, set, la, pi, cp, uc, uf, vs} = core
+  Target{sc, fmt, tw, th, images, views, done, +mem, Canvas{+ci, +cv, cm, k}} = tg
+  do IO<Gpu>:
+    IO.try(Unit, N.vk_idle(dev))
+    +reg2 : List<&2, U32> <- release([cv, ci, mem], reg)
+    t : Target & List<&2, U32> <- offscreen(dev, types, w, h, reg2)
+    return reimage.made(core, t, fs, tex, st, rb, w, h, d, r)
 
 def resize.pick(differs: Bool, g: Gpu) -> IO(Gpu):
   match differs:
@@ -466,16 +531,23 @@ def differs(s: Size, +w: U32, +h: U32) -> Bool:
   Size{+tw, +th} = s
   U32.is_ne(tw, w) || U32.is_ne(th, h)
 
+def resize.image(differs: Bool, g: Gpu) -> IO(Gpu):
+  match differs:
+    case True{}:
+      reimage(g)
+    case False{}:
+      IO.pure(Gpu, invalidate(g))
+
 def resize.offscreen(off: Bool, +g: Gpu, +w: U32, +h: U32) -> IO(Gpu):
   match off:
     case True{}:
-      # Offscreen targets keep the size they were opened with.
-      IO.pure(Gpu, invalidate(g))
+      resize.image(differs(target_size(g), w, h), resize.size(g, w, h))
     case False{}:
       resize.pick(differs(target_size(g), w, h), resize.size(g, w, h))
 
 # Records the window's new size (from Ankra's Resized event); recreates
-# the swapchain when it differs from the current one.
+# the swapchain when it differs from the current one. An offscreen target
+# is made again at a new size.
 def resize(+g: Gpu, +w: U32, +h: U32) -> IO(Gpu):
   resize.offscreen(offscreen_target(g), g, w, h)
 
@@ -684,9 +756,10 @@ def rendered(+g: Gpu) -> Gpu:
   Gpu{core, t, rotate(fs), tex, st, rb, reg, w, h, False{}, (d + 1 : U32), r}
 
 # Submits the recorded frame: to the swapchain (waiting for the acquired
-# image, then presenting) or, offscreen, on its own.
+# image at `stage`, its first use, then presenting) or, offscreen, on its
+# own.
 def submit.target(off: Bool, +g: Gpu, +dev: U32, +cmd: U32, +acq: U32, +fence: U32,
-  +sc: U32, +index: U32, +finished: U32, +acquired: U32) -> IO(Gpu):
+  +sc: U32, +index: U32, +finished: U32, +acquired: U32, +stage: U32) -> IO(Gpu):
   match off:
     case True{}:
       do IO<Gpu>:
@@ -694,7 +767,7 @@ def submit.target(off: Bool, +g: Gpu, +dev: U32, +cmd: U32, +acq: U32, +fence: U
         return rendered(g)
     case False{}:
       do IO<Gpu>:
-        IO.try(Unit, N.vk_submit(dev, cmd, acq, Vk.stage_color_output(), finished, fence))
+        IO.try(Unit, N.vk_submit(dev, cmd, acq, stage, finished, fence))
         +status : U32 <- IO.try(U32, N.vk_present(dev, sc, index, finished))
         presented(g, status, acquired)
 
@@ -714,20 +787,22 @@ def draw.frame(fs: List<&2, Frame>, +g: Gpu, +dev: U32, +sc: U32, +index: U32,
         ops : Array<U32> & U32 <- checked(C.frame(C.Pass{image, view, tw, th, clear,
           pipe, layout, set, b, n, xw, xh, Bool.not(off)}))
         record(cmd, ops)
-        submit.target(off, g, dev, cmd, acq, fence, sc, index, finished, acquired)
+        submit.target(off, g, dev, cmd, acq, fence, sc, index, finished, acquired,
+          Vk.stage_color_output())
 
-# Records, submits and presents one frame into the acquired image.
+# Records, submits and presents one frame into the acquired image. The
+# canvas does not see this frame, so it no longer holds the picture.
 def draw.submit(+g: Gpu, +index: U32, +acquired: U32, quads: List<&2, Q.Quad>,
   +clear: U32) -> IO(Gpu):
   Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
   Core{inst, layer, gpu, name, surf, +dev, family, types, sa, sl, pool, +set, +layout, +pipe, cp, uc, uf, vs} = core
-  Target{+sc, fmt, +tw, +th, +images, +views, +done, m} = t
+  Target{+sc, fmt, +tw, +th, +images, +views, +done, m, c} = t
   Texture{img, mem, view, +xw, +xh} = tex
   +i = U32.to_nat(index)
   +words = Q.pack(quads)
   +n = (W.count(words) / Q.stride_words() : U32)
-  draw.frame(fs, g, dev, sc, index, acquired, W.at(images, i), W.at(views, i), W.at(done, i),
-    tw, th, clear, pipe, layout, set, xw, xh, words, n)
+  draw.frame(fs, with_kept(g, False{}), dev, sc, index, acquired, W.at(images, i), W.at(views, i),
+    W.at(done, i), tw, th, clear, pipe, layout, set, xw, xh, words, n)
 
 def frame_sync(fs: List<&2, Frame>) -> List<&2, U32>:
   match fs:
@@ -784,6 +859,108 @@ def draw.ready(ok: Bool, +g: Gpu, quads: List<&2, Q.Quad>, +clear: U32) -> IO(Gp
 def draw(+g: Gpu, quads: List<&2, Q.Quad>, +clear: U32) -> IO(Gpu):
   draw.ready(drawable(g), g, quads, clear)
 
+# Painting the canvas
+# -------------------
+
+def settled(g: Gpu) -> Gpu:
+  Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
+  Gpu{core, t, fs, tex, st, rb, reg, w, h, False{}, d, r}
+
+# Without a canvas the frame is drawn whole into the acquired image, as
+# `draw` does; the acquired image is then first used at the color stage.
+def paint.commands(direct: Bool, p: C.Paint, pass: C.Pass) -> List<&2, C.Cmd>:
+  match direct:
+    case True{}:
+      C.frame(pass)
+    case False{}:
+      C.paint(p)
+
+def paint.frame(fs: List<&2, Frame>, +g: Gpu, +dev: U32, +sc: U32, +index: U32,
+  +acquired: U32, +image: U32, +view: U32, +finished: U32, +canvas: U32, +cview: U32,
+  +tw: U32, +th: U32, +clear: U32, +pipe: U32, +layout: U32, +set: U32, +xw: U32, +xh: U32,
+  words: Array<U32>, +n: U32, ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
+  match fs:
+    case Nil{}:
+      IO.die(Gpu, 1, "Voltra: no frame in flight")
+    case Con{Frame{+cmd, +fence, +acq, Buffer{+b, +m, bytes}, cap}, rest}:
+      +off = offscreen_target(g)
+      +direct = U32.is_eq(canvas, 0)
+      do IO<Gpu>:
+        wr : Array<U32> & Result<&1, &1, U32 & String, Unit> <- N.vk_write(m, 0, words,
+          (n * Q.stride_words() : U32))
+        settle(Unit, wr)
+        ops : Array<U32> & U32 <- checked(paint.commands(direct,
+          C.Paint{canvas, cview, image, tw, th, clear, pipe, layout, set, b, xw, xh, ranges, whole,
+            Bool.not(off)},
+          C.Pass{image, view, tw, th, clear, pipe, layout, set, b, n, xw, xh, Bool.not(off)}))
+        record(cmd, ops)
+        submit.target(off, with_kept(g, Bool.not(direct)), dev, cmd, acq, fence, sc, index,
+          finished, acquired, Bool.pick(U32, direct, Vk.stage_color_output(), Vk.stage_transfer()))
+
+def paint.submit(+g: Gpu, +index: U32, +acquired: U32, words: Array<U32>, +n: U32,
+  +clear: U32, ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
+  Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
+  Core{inst, layer, gpu, name, surf, +dev, family, types, sa, sl, pool, +set, +layout, +pipe, cp, uc, uf, vs} = core
+  Target{+sc, fmt, +tw, +th, +images, +views, +done, m, Canvas{+ci, +cv, cm, k}} = t
+  Texture{img, mem, view, +xw, +xh} = tex
+  +i = U32.to_nat(index)
+  paint.frame(fs, g, dev, sc, index, acquired, W.at(images, i), W.at(views, i), W.at(done, i),
+    ci, cv, tw, th, clear, pipe, layout, set, xw, xh, words, n, ranges, whole)
+
+def paint.acquired(ok: Bool, +g: Gpu, +index: U32, +status: U32, words: Array<U32>, +n: U32,
+  +clear: U32, ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
+  match ok:
+    case False{}:
+      # Out of date or timed out: rebuild; the next paint is whole.
+      retarget(g)
+    case True{}:
+      +fs = frames_of(g)
+      do IO<Gpu>:
+        +reset : U32 <- IO.try(U32, N.vk_wait(device(g), W.at(frame_sync(fs), 0n), 0, True{}))
+        +g2 : Gpu <- grow(U32.is_gt(n, head_capacity(fs)), g, n)
+        paint.submit(g2, index, status, words, n, clear, ranges, whole)
+
+def paint.go(off: Bool, +g: Gpu, +sync: List<&2, U32>, words: Array<U32>, +n: U32, +clear: U32,
+  ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
+  match off:
+    case True{}:
+      do IO<Gpu>:
+        +waited : U32 <- IO.try(U32, N.vk_wait(device(g), W.at(sync, 0n), 10000, False{}))
+        paint.acquired(True{}, g, 0, 0, words, n, clear, ranges, whole)
+    case False{}:
+      do IO<Gpu>:
+        +waited : U32 <- IO.try(U32, N.vk_wait(device(g), W.at(sync, 0n), 10000, False{}))
+        +a : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_acquire(device(g), swapchain(g),
+          W.at(sync, 1n), 10000))
+        paint.acquired(U32.is_le(W.at(a, 0n), 1), g, W.at(a, 1n), W.at(a, 0n), words, n, clear,
+          ranges, whole)
+
+def paint.ready(ok: Bool, fits: Bool, +g: Gpu, words: Array<U32>, +n: U32, +clear: U32,
+  ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
+  match ok fits:
+    case False{} _:
+      # Minimized (no swapchain): nothing to draw into, and the canvas no
+      # longer follows the picture.
+      IO.pure(Gpu, settled(with_kept(g, False{})))
+    case True{} False{}:
+      IO.die(Gpu, 1, "Voltra: paint: a canvas without the last picture must be painted whole")
+    case True{} True{}:
+      paint.go(offscreen_target(g), g, frame_sync(frames_of(g)), words, n, clear, ranges, whole)
+
+# Paints a frame over the canvas, which keeps the picture between frames:
+# `words` holds `n` quads packed as Q.pack does (the array may be larger),
+# and each range redraws its rectangle with its instances, scissored, so
+# the rest of the picture stays as it was; `whole` clears the canvas to
+# `clear` first (use one range over the whole target). The canvas is then
+# copied into the acquired swapchain image and presented or, offscreen,
+# kept for `read`. A canvas that does not hold the last painted picture
+# (`kept` False: a new target or size, a frame drawn with `draw`, a lost
+# frame) must be painted whole. Without a canvas every paint draws its
+# quads whole into the image, in order.
+def paint(+g: Gpu, words: Array<U32>, +n: U32, +clear: U32, ranges: List<&2, C.Range>,
+  +whole: Bool) -> IO(Gpu):
+  paint.ready(drawable(g), whole || kept(g), g, words, n, clear, ranges, whole)
+
 # Readback
 # --------
 
@@ -811,7 +988,7 @@ def read.done(+g: Gpu, +n: U32, got: Array<U32> & Result<&1, &1, U32 & String, U
 
 def read.copy(+g: Gpu, +w: U32, +h: U32) -> IO(Gpu & Array<U32>):
   Gpu{core, t, fs, tex, st, rb, reg, gw, gh, p, d, r} = g
-  Target{sc, fmt, tw, th, +images, vi, dn, m} = t
+  Target{sc, fmt, tw, th, +images, vi, dn, m, c} = t
   Buffer{+b, +mem, have} = rb
   +n = (w * h : U32)
   do IO<Gpu & Array<U32>>:
@@ -926,7 +1103,7 @@ def open.pipeline(+inst: U32, +layer: U32, +gpu: P.Gpu, +name: String,
   +surface: U32, +dev: U32, +family: U32, +types: List<&2, U32>,
   +vsync: Bool, +w: U32, +h: U32, t: Target & List<&2, U32>) -> IO(Gpu):
   (tg, treg) = t
-  Target{sc, +fmt, tw, th, i, v, dn, mem} = tg
+  Target{sc, +fmt, tw, th, i, v, dn, mem, c} = tg
   do IO<Gpu>:
     +sampler : U32 <- IO.try(U32, N.vk_sampler(dev,
       [Vk.filter_nearest(), Vk.filter_nearest(), Vk.address_clamp_to_edge()]))
@@ -946,14 +1123,14 @@ def open.pipeline(+inst: U32, +layer: U32, +gpu: P.Gpu, +name: String,
     +ufence : U32 <- IO.try(U32, N.vk_fence(dev, False{}))
     open.finish(Core{inst, layer, gpu, name, surface, dev, family, types,
       sampler, sl, pool, set, layout, pipe, cpool, ucmd, ufence, vsync},
-      dev, types, cpool, w, h, (Target{sc, fmt, tw, th, i, v, dn, mem}, treg),
+      dev, types, cpool, w, h, (Target{sc, fmt, tw, th, i, v, dn, mem, c}, treg),
       [ufence, ucmd, cpool, pipe, layout, set, pool, sl, sampler])
 
 def open.objects(+inst: U32, +layer: U32, +gpu: P.Gpu, +name: String,
   +surface: U32, +dev: U32, +family: U32, +types: List<&2, U32>,
   +vsync: Bool, +w: U32, +h: U32, reg: List<&2, U32>) -> IO(Gpu):
   do IO<Gpu>:
-    t : Target & List<&2, U32> <- target(dev, surface, vsync, 0, w, h, reg)
+    t : Target & List<&2, U32> <- target(dev, types, surface, vsync, 0, w, h, reg)
     open.pipeline(inst, layer, gpu, name, surface, dev, family, types, vsync, w, h, t)
 
 def open.device(+native: List<&2, U32>, +inst: U32, +layer: U32, +gpu: P.Gpu, +vsync: Bool,
