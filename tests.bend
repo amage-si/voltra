@@ -41,8 +41,8 @@ def gpu_index(m: Maybe<&2, P.Gpu>) -> U32:
   match m:
     case None{}:
       99
-    case Some{P.Gpu{i, k, v, d, a, dr, mi, l}}:
-      i
+    case Some{g}:
+      P.gpu.index(g)
 
 def array_words.go(n: Nat, r: Array<U32> & U32, +i: U32) -> List<&2, U32>:
   match n:

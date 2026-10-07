@@ -160,8 +160,14 @@ def texture(+dev: U32, +types: List<&2, U32>, +w: U32, +h: U32,
 # swapchain gets a canvas of its own, in its format and size, copied into
 # the acquired image every frame; image 0 means none (the surface cannot
 # take copies), and every frame is then drawn whole into the image.
+#
+# `Alias` makes Canvas recursive, so the compiler passes it as one pointer
+# instead of four flattened words in every Gpu (the widest record passed
+# sets the frame size of every call; see `#define WL_RESW` in the generated
+# C). Nothing builds an Alias; the accessors answer for the canvas it wraps.
 type Canvas is Data:
   Canvas{image: U32, view: U32, memory: U32, kept: Bool}
+  Alias{canvas: Canvas}
 
 # A swapchain target has a swapchain, its images and views, one
 # render-finished semaphore per image and a canvas. An offscreen target has
@@ -173,6 +179,41 @@ type Target is Data:
 
 def no_canvas() -> Canvas:
   Canvas{0, 0, 0, False{}}
+
+def canvas.image(c: Canvas) -> U32:
+  match c:
+    case Canvas{i, v, m, k}:
+      i
+    case Alias{inner}:
+      canvas.image(inner)
+
+def canvas.view(c: Canvas) -> U32:
+  match c:
+    case Canvas{i, v, m, k}:
+      v
+    case Alias{inner}:
+      canvas.view(inner)
+
+def canvas.memory(c: Canvas) -> U32:
+  match c:
+    case Canvas{i, v, m, k}:
+      m
+    case Alias{inner}:
+      canvas.memory(inner)
+
+def canvas.kept(c: Canvas) -> Bool:
+  match c:
+    case Canvas{i, v, m, k}:
+      k
+    case Alias{inner}:
+      canvas.kept(inner)
+
+def canvas.keeping(c: Canvas, +k: Bool) -> Canvas:
+  match c:
+    case Canvas{i, v, m, old}:
+      Canvas{i, v, m, k}
+    case Alias{inner}:
+      canvas.keeping(inner, k)
 
 def views(+dev: U32, +fmt: U32, images: List<&2, U32>) -> IO(List<&2, U32>):
   match images:
@@ -348,18 +389,17 @@ def shader(+dev: U32, code: Array<U32> & U32) -> IO(U32):
 
 def describe(g: Gpu) -> String:
   Gpu{core, target, fs, tex, st, rb, reg, w, h, p, d, r} = g
-  Core{inst, +layer, gpu, +name, +surf, dev, +family, ty, sa, sl, po, se, la, pi, cp, uc, uf, vs} = core
-  P.Gpu{+index, +kind, +vendor, +device, +api, driver, +max_image, +local} = gpu
-  Target{sc, +fmt, +tw, +th, +images, vi, dn, mem, Canvas{+canvas, cv, cm, kept}} = target
-  "GPU " ++ U32.show(index) ++ ": " ++ name ++ " (" ++ P.kind_name(kind) ++
-    ", vendor " ++ U32.show(vendor) ++ ", device " ++ U32.show(device) ++
-    ", Vulkan " ++ P.api_show(api) ++ ", " ++ U32.show(local) ++
-    " MiB device-local, max image " ++ U32.show(max_image) ++ ")\n" ++
+  Core{inst, +layer, +gpu, +name, +surf, dev, +family, ty, sa, sl, po, se, la, pi, cp, uc, uf, vs} = core
+  Target{sc, +fmt, +tw, +th, +images, vi, dn, mem, +c} = target
+  "GPU " ++ U32.show(P.gpu.index(gpu)) ++ ": " ++ name ++ " (" ++ P.kind_name(P.gpu.kind(gpu)) ++
+    ", vendor " ++ U32.show(P.gpu.vendor(gpu)) ++ ", device " ++ U32.show(P.gpu.device(gpu)) ++
+    ", Vulkan " ++ P.api_show(P.gpu.api(gpu)) ++ ", " ++ U32.show(P.gpu.local_mib(gpu)) ++
+    " MiB device-local, max image " ++ U32.show(P.gpu.max_image(gpu)) ++ ")\n" ++
     "queue family " ++ U32.show(family) ++ ", " ++
     Bool.pick(String, U32.is_eq(surf, 0), "offscreen ", "swapchain ") ++
     U32.show(tw) ++ "x" ++ U32.show(th) ++ ", format " ++ U32.show(fmt) ++ ", " ++
     U32.show(W.count(images)) ++ " images, " ++
-    Bool.pick(String, U32.is_eq(canvas, 0), "no canvas", "retained canvas") ++ ", " ++
+    Bool.pick(String, U32.is_eq(canvas.image(c), 0), "no canvas", "retained canvas") ++ ", " ++
     U32.show(U32.from_nat(frames_in_flight())) ++ " frames in flight, validation layer " ++
     Bool.pick(String, U32.is_eq(layer, 1), "on", "off (not installed)")
 
@@ -421,13 +461,13 @@ def target_size(g: Gpu) -> Size:
 # redraw only parts of it.
 def kept(g: Gpu) -> Bool:
   Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
-  Target{sc, fmt, tw, th, i, v, dn, m, Canvas{+ci, cv, cm, k}} = t
-  k && U32.is_ne(ci, 0)
+  Target{sc, fmt, tw, th, i, v, dn, m, +c} = t
+  canvas.kept(c) && U32.is_ne(canvas.image(c), 0)
 
 def with_kept(g: Gpu, +k: Bool) -> Gpu:
   Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
-  Target{sc, fmt, tw, th, i, v, dn, m, Canvas{ci, cv, cm, old}} = t
-  Gpu{core, Target{sc, fmt, tw, th, i, v, dn, m, Canvas{ci, cv, cm, k}}, fs, tex, st, rb, reg, w, h,
+  Target{sc, fmt, tw, th, i, v, dn, m, c} = t
+  Gpu{core, Target{sc, fmt, tw, th, i, v, dn, m, canvas.keeping(c, k)}, fs, tex, st, rb, reg, w, h,
     p, d, r}
 
 def window_size(g: Gpu) -> Size:
@@ -492,11 +532,12 @@ def retarget.swap(core: Core, t: Target & List<&2, U32>, old: List<&2, U32>,
 def retarget(g: Gpu) -> IO(Gpu):
   Gpu{+core, tg, fs, tex, st, rb, reg, +w, +h, p, d, r} = g
   Core{inst, layer, gpu, name, +surf, +dev, family, +types, sa, sl, pool, set, la, pi, cp, uc, uf, +vsync} = core
-  Target{+sc, fmt, tw, th, +images, +views, +done, m, Canvas{+ci, +cv, +cm, k}} = tg
+  Target{+sc, fmt, tw, th, +images, +views, +done, m, +c} = tg
   do IO<Gpu>:
     IO.try(Unit, N.vk_idle(dev))
     t : Target & List<&2, U32> <- target(dev, types, surf, vsync, sc, w, h, reg)
-    retarget.swap(core, t, drop_none(cv <> cm <> ci <> List.append(&2, U32, done,
+    retarget.swap(core, t, drop_none(canvas.view(c) <> canvas.memory(c) <> canvas.image(c) <>
+      List.append(&2, U32, done,
       List.append(&2, U32, views, List.append(&2, U32, images, [sc])))),
       fs, tex, st, rb, w, h, d, r)
 
@@ -509,10 +550,10 @@ def reimage.made(core: Core, t: Target & List<&2, U32>, fs: List<&2, Frame>, tex
 def reimage(g: Gpu) -> IO(Gpu):
   Gpu{+core, tg, fs, tex, st, rb, reg, +w, +h, p, d, r} = g
   Core{inst, layer, gpu, name, surf, +dev, family, +types, sa, sl, pool, set, la, pi, cp, uc, uf, vs} = core
-  Target{sc, fmt, tw, th, images, views, done, +mem, Canvas{+ci, +cv, cm, k}} = tg
+  Target{sc, fmt, tw, th, images, views, done, +mem, +c} = tg
   do IO<Gpu>:
     IO.try(Unit, N.vk_idle(dev))
-    +reg2 : List<&2, U32> <- release([cv, ci, mem], reg)
+    +reg2 : List<&2, U32> <- release([canvas.view(c), canvas.image(c), mem], reg)
     t : Target & List<&2, U32> <- offscreen(dev, types, w, h, reg2)
     return reimage.made(core, t, fs, tex, st, rb, w, h, d, r)
 
@@ -901,11 +942,11 @@ def paint.submit(+g: Gpu, +index: U32, +acquired: U32, words: Array<U32>, +n: U3
   +clear: U32, ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
   Gpu{core, t, fs, tex, st, rb, reg, w, h, p, d, r} = g
   Core{inst, layer, gpu, name, surf, +dev, family, types, sa, sl, pool, +set, +layout, +pipe, cp, uc, uf, vs} = core
-  Target{+sc, fmt, +tw, +th, +images, +views, +done, m, Canvas{+ci, +cv, cm, k}} = t
+  Target{+sc, fmt, +tw, +th, +images, +views, +done, m, +c} = t
   Texture{img, mem, view, +xw, +xh} = tex
   +i = U32.to_nat(index)
   paint.frame(fs, g, dev, sc, index, acquired, W.at(images, i), W.at(views, i), W.at(done, i),
-    ci, cv, tw, th, clear, pipe, layout, set, xw, xh, words, n, ranges, whole)
+    canvas.image(c), canvas.view(c), tw, th, clear, pipe, layout, set, xw, xh, words, n, ranges, whole)
 
 def paint.acquired(ok: Bool, +g: Gpu, +index: U32, +status: U32, words: Array<U32>, +n: U32,
   +clear: U32, ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
@@ -1135,7 +1176,7 @@ def open.objects(+inst: U32, +layer: U32, +gpu: P.Gpu, +name: String,
 
 def open.device(+native: List<&2, U32>, +inst: U32, +layer: U32, +gpu: P.Gpu, +vsync: Bool,
   +w: U32, +h: U32) -> IO(Gpu):
-  P.Gpu{+index, kind, vendor, device, api, driver, max_image, local} = gpu
+  +index = P.gpu.index(gpu)
   do IO<Gpu>:
     +name : String <- IO.try(String, N.vk_gpu_name(inst, index))
     +surface : U32 <- IO.try(U32, N.vk_surface(inst, native))
@@ -1170,7 +1211,7 @@ def open.offscreen_target(+inst: U32, +layer: U32, +gpu: P.Gpu, +name: String,
     open.pipeline(inst, layer, gpu, name, 0, dev, family, types, True{}, w, h, t)
 
 def open.offscreen_device(+inst: U32, +layer: U32, +gpu: P.Gpu, +w: U32, +h: U32) -> IO(Gpu):
-  P.Gpu{+index, kind, vendor, device, api, driver, max_image, local} = gpu
+  +index = P.gpu.index(gpu)
   do IO<Gpu>:
     +name : String <- IO.try(String, N.vk_gpu_name(inst, index))
     +fams : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_queue_families(inst, index, 0))

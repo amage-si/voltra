@@ -5,9 +5,64 @@ import ./words.bend as W
 # Pure selection policies. The bridge reports what the driver offers as
 # words; these functions decide what Voltra uses. Native tests cover them.
 
+# `Alias` makes Gpu recursive: the compiler then passes it as one pointer
+# instead of eight flattened words through every call (the widest record
+# passed sets the frame size of every call; see `#define WL_RESW` in the
+# generated C). Nothing builds an Alias; the accessors answer for the GPU it
+# wraps.
 type Gpu is Data:
   Gpu{index: U32, kind: U32, vendor: U32, device: U32, api: U32,
     driver: U32, max_image: U32, local_mib: U32}
+  Alias{gpu: Gpu}
+
+def gpu.index(g: Gpu) -> U32:
+  match g:
+    case Gpu{i, k, v, d, a, dr, mx, l}:
+      i
+    case Alias{inner}:
+      gpu.index(inner)
+
+def gpu.kind(g: Gpu) -> U32:
+  match g:
+    case Gpu{i, k, v, d, a, dr, mx, l}:
+      k
+    case Alias{inner}:
+      gpu.kind(inner)
+
+def gpu.vendor(g: Gpu) -> U32:
+  match g:
+    case Gpu{i, k, v, d, a, dr, mx, l}:
+      v
+    case Alias{inner}:
+      gpu.vendor(inner)
+
+def gpu.device(g: Gpu) -> U32:
+  match g:
+    case Gpu{i, k, v, d, a, dr, mx, l}:
+      d
+    case Alias{inner}:
+      gpu.device(inner)
+
+def gpu.api(g: Gpu) -> U32:
+  match g:
+    case Gpu{i, k, v, d, a, dr, mx, l}:
+      a
+    case Alias{inner}:
+      gpu.api(inner)
+
+def gpu.max_image(g: Gpu) -> U32:
+  match g:
+    case Gpu{i, k, v, d, a, dr, mx, l}:
+      mx
+    case Alias{inner}:
+      gpu.max_image(inner)
+
+def gpu.local_mib(g: Gpu) -> U32:
+  match g:
+    case Gpu{i, k, v, d, a, dr, mx, l}:
+      l
+    case Alias{inner}:
+      gpu.local_mib(inner)
 
 # Words from vk_gpus: [count, (kind, vendor, device, api, driver,
 # max_image, local_mib)*].
@@ -44,9 +99,8 @@ def kind_score(+k: U32) -> U32:
       Bool.pick(U32, U32.is_eq(k, Vk.gpu_virtual()), 2, 1)))
 
 # 0 rejects the device; otherwise higher is better.
-def score(g: Gpu) -> U32:
-  Gpu{index, +kind, vendor, device, +api, driver, max_image, local_mib} = g
-  Bool.pick(U32, api_ok(api), kind_score(kind), 0)
+def score(+g: Gpu) -> U32:
+  Bool.pick(U32, api_ok(gpu.api(g)), kind_score(gpu.kind(g)), 0)
 
 def kind_name(+k: U32) -> String:
   Bool.pick(String, U32.is_eq(k, Vk.gpu_discrete()), "discrete",
