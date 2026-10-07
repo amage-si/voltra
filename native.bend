@@ -37,8 +37,10 @@ def vk_queue_families(instance: U32, gpu: U32, surface: U32) ->
   import "./native/voltra.c"
   import "./native/voltra.js"
 
-def vk_device(instance: U32, gpu: U32, family: U32) ->
-  IO(Result<&1, &1, U32 & String, U32>):
+# flags bit 0: VK_KHR_incremental_present when offered. Answers [slot,
+# incremental_present_on].
+def vk_device(instance: U32, gpu: U32, family: U32, flags: U32) ->
+  IO(Result<&1, &1, U32 & String, List<&2, U32>>):
   import "./native/voltra.c"
   import "./native/voltra.js"
 
@@ -69,8 +71,10 @@ def vk_acquire(device: U32, swapchain: U32, semaphore: U32, ms: U32) ->
   import "./native/voltra.c"
   import "./native/voltra.js"
 
-def vk_present(device: U32, swapchain: U32, index: U32, semaphore: U32) ->
-  IO(Result<&1, &1, U32 & String, U32>):
+# rects: (x, y, width, height) words of the regions that changed, at most
+# 64 of them, or Nil (VK_KHR_incremental_present).
+def vk_present(device: U32, swapchain: U32, index: U32, semaphore: U32,
+  rects: List<&2, U32>) -> IO(Result<&1, &1, U32 & String, U32>):
   import "./native/voltra.c"
   import "./native/voltra.js"
 

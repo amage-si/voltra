@@ -10,59 +10,81 @@ import ./words.bend as W
 # passed sets the frame size of every call; see `#define WL_RESW` in the
 # generated C). Nothing builds an Alias; the accessors answer for the GPU it
 # wraps.
+# `regions` says whether the device was made with VK_KHR_incremental_present
+# (see `device_flags`).
 type Gpu is Data:
   Gpu{index: U32, kind: U32, vendor: U32, device: U32, api: U32,
-    driver: U32, max_image: U32, local_mib: U32}
+    driver: U32, max_image: U32, local_mib: U32, regions: Bool}
   Alias{gpu: Gpu}
 
 def gpu.index(g: Gpu) -> U32:
   match g:
-    case Gpu{i, k, v, d, a, dr, mx, l}:
+    case Gpu{i, k, v, d, a, dr, mx, l, rg}:
       i
     case Alias{inner}:
       gpu.index(inner)
 
 def gpu.kind(g: Gpu) -> U32:
   match g:
-    case Gpu{i, k, v, d, a, dr, mx, l}:
+    case Gpu{i, k, v, d, a, dr, mx, l, rg}:
       k
     case Alias{inner}:
       gpu.kind(inner)
 
 def gpu.vendor(g: Gpu) -> U32:
   match g:
-    case Gpu{i, k, v, d, a, dr, mx, l}:
+    case Gpu{i, k, v, d, a, dr, mx, l, rg}:
       v
     case Alias{inner}:
       gpu.vendor(inner)
 
 def gpu.device(g: Gpu) -> U32:
   match g:
-    case Gpu{i, k, v, d, a, dr, mx, l}:
+    case Gpu{i, k, v, d, a, dr, mx, l, rg}:
       d
     case Alias{inner}:
       gpu.device(inner)
 
 def gpu.api(g: Gpu) -> U32:
   match g:
-    case Gpu{i, k, v, d, a, dr, mx, l}:
+    case Gpu{i, k, v, d, a, dr, mx, l, rg}:
       a
     case Alias{inner}:
       gpu.api(inner)
 
 def gpu.max_image(g: Gpu) -> U32:
   match g:
-    case Gpu{i, k, v, d, a, dr, mx, l}:
+    case Gpu{i, k, v, d, a, dr, mx, l, rg}:
       mx
     case Alias{inner}:
       gpu.max_image(inner)
 
 def gpu.local_mib(g: Gpu) -> U32:
   match g:
-    case Gpu{i, k, v, d, a, dr, mx, l}:
+    case Gpu{i, k, v, d, a, dr, mx, l, rg}:
       l
     case Alias{inner}:
       gpu.local_mib(inner)
+
+def gpu.regions(g: Gpu) -> Bool:
+  match g:
+    case Gpu{i, k, v, d, a, dr, mx, l, rg}:
+      rg
+    case Alias{inner}:
+      gpu.regions(inner)
+
+def gpu.with_regions(g: Gpu, +on: Bool) -> Gpu:
+  match g:
+    case Gpu{i, k, v, d, a, dr, mx, l, rg}:
+      Gpu{i, k, v, d, a, dr, mx, l, on}
+    case Alias{inner}:
+      gpu.with_regions(inner, on)
+
+# Optional device extensions to ask for when offered (vk_device flags):
+# bit 0, VK_KHR_incremental_present, so a partial paint's present names the
+# regions it changed.
+def device_flags() -> U32:
+  1
 
 # Words from vk_gpus: [count, (kind, vendor, device, api, driver,
 # max_image, local_mib)*].
@@ -73,7 +95,7 @@ def gpus.go(n: Nat, +i: U32, xs: List<&2, U32>) -> List<&2, Gpu>:
     case 1n+p:
       +ws = xs
       Gpu{i, W.at(ws, 0n), W.at(ws, 1n), W.at(ws, 2n), W.at(ws, 3n),
-        W.at(ws, 4n), W.at(ws, 5n), W.at(ws, 6n)}
+        W.at(ws, 4n), W.at(ws, 5n), W.at(ws, 6n), False{}}
         <> gpus.go(p, (i + 1 : U32), W.drop(ws, 7n))
 
 def gpus(+xs: List<&2, U32>) -> List<&2, Gpu>:

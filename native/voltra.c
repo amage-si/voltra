@@ -399,11 +399,30 @@ typedef struct {
   VkResult* pResults;
 } VkPresentInfoKHR;
 
+typedef struct {
+  char extensionName[256]; uint32_t specVersion;
+} VkExtensionProperties;
+
+typedef struct {
+  VkOffset2D offset; VkExtent2D extent; uint32_t layer;
+} VkRectLayerKHR;
+
+typedef struct {
+  uint32_t rectangleCount; const VkRectLayerKHR* pRectangles;
+} VkPresentRegionKHR;
+
+typedef struct {
+  VkEnum sType; const void* pNext; uint32_t swapchainCount;
+  const VkPresentRegionKHR* pRegions;
+} VkPresentRegionsKHR;
+
 // The Vulkan entry points the bridge calls, loaded after vkCreateInstance.
 #define VX_FNS(X) \
   X(void, vkDestroyInstance, (VkInstance, const void*)) \
   X(VkResult, vkEnumeratePhysicalDevices, (VkInstance, uint32_t*, \
     VkPhysicalDevice*)) \
+  X(VkResult, vkEnumerateDeviceExtensionProperties, (VkPhysicalDevice, \
+    const char*, uint32_t*, VkExtensionProperties*)) \
   X(void, vkGetPhysicalDeviceProperties, (VkPhysicalDevice, \
     VkPhysicalDeviceProperties*)) \
   X(void, vkGetPhysicalDeviceMemoryProperties, (VkPhysicalDevice, \
@@ -844,7 +863,9 @@ static void __attribute__((constructor)) vx_vk_queue_families_use(void) {
 #ifdef CID(vk_device)
 
 // A logical device with one queue of `family`, VK_KHR_swapchain and the
-// dynamicRendering feature (core in 1.3).
+// dynamicRendering feature (core in 1.3). `flags` bit 0 asks for
+// VK_KHR_incremental_present too, when the device offers it. Answers
+// [slot, incremental_present_on].
 Term vx_vk_device_run(Env e, Term* f, IoWork* w) {
   VxSlot* s = vx_get((u32)f[0], VX_INSTANCE);
   VkPhysicalDevice gpu = s != NULL ? vx_gpu(s, (u32)f[1]) : NULL;
@@ -855,8 +876,19 @@ Term vx_vk_device_run(Env e, Term* f, IoWork* w) {
   float prio = 1.0f;
   VkDeviceQueueCreateInfo q = { 2, NULL, 0, family, 1, &prio };
   VkPhysicalDeviceDynamicRenderingFeatures dyn = { 1000044003, NULL, 1 };
-  const char* ext = "VK_KHR_swapchain";
-  VkDeviceCreateInfo ci = { 3, &dyn, 0, 1, &q, 0, NULL, 1, &ext, NULL };
+  const char* exts[] = { "VK_KHR_swapchain", "VK_KHR_incremental_present" };
+  u32 inc = 0;
+  if ((u32)f[3] & 1) {
+    uint32_t n = 0;
+    vkEnumerateDeviceExtensionProperties(gpu, NULL, &n, NULL);
+    VkExtensionProperties* ps = io_mem(calloc(n + 1, sizeof *ps));
+    vkEnumerateDeviceExtensionProperties(gpu, NULL, &n, ps);
+    for (uint32_t i = 0; i < n; i += 1) {
+      inc |= strcmp(ps[i].extensionName, exts[1]) == 0;
+    }
+    free(ps);
+  }
+  VkDeviceCreateInfo ci = { 3, &dyn, 0, 1, &q, 0, NULL, 1 + inc, exts, NULL };
   VkDevice dev;
   VX_TRY(e, vkCreateDevice(gpu, &ci, NULL, &dev), "vkCreateDevice");
   VkQueue queue;
@@ -869,7 +901,8 @@ Term vx_vk_device_run(Env e, Term* f, IoWork* w) {
   }
   vx_slot[id].size = family;
   vx_slot[id].map = (void*)gpu;
-  return io_done(e, (Term)id);
+  u32 out[2] = { id, inc };
+  return io_done(e, vx_list(e, out, 2));
 }
 
 static void __attribute__((constructor)) vx_vk_device_use(void) {
@@ -1044,16 +1077,28 @@ static void __attribute__((constructor)) vx_vk_acquire_use(void) {
 #ifdef CID(vk_present)
 
 // Status as vk_acquire: 0 presented, 1 suboptimal, 2 out of date.
+// `rects` holds (x, y, width, height) words of at most 64 rectangles that
+// changed since the image's last present (VK_KHR_incremental_present,
+// enabled by vk_device), or nothing; the whole image is presented anyway.
 Term vx_vk_present_run(Env e, Term* f, IoWork* w) {
   VxSlot* d = vx_get((u32)f[0], VX_DEVICE);
   VxSlot* sc = vx_get((u32)f[1], VX_SWAPCHAIN);
   VxSlot* sem = vx_get((u32)f[3], VX_SEMAPHORE);
-  if (d == NULL || sc == NULL || sem == NULL) {
+  u32 words[256];
+  u32 nw = vx_words(e, f[4], words, 256);
+  if (d == NULL || sc == NULL || sem == NULL || nw > 256 || nw % 4 != 0) {
     return VX_BAD(e, "present arguments");
   }
+  VkRectLayerKHR rs[64];
+  for (u32 i = 0; i < nw / 4; i += 1) {
+    rs[i] = (VkRectLayerKHR){ { (int32_t)words[4 * i], (int32_t)words[4 * i + 1] },
+      { words[4 * i + 2], words[4 * i + 3] }, 0 };
+  }
+  VkPresentRegionKHR region = { nw / 4, rs };
+  VkPresentRegionsKHR regions = { 1000084000, NULL, 1, &region };
   uint32_t index = (u32)f[2];
-  VkPresentInfoKHR pi = { 1000001001, NULL, 1, &sem->h, 1, &sc->h, &index,
-    NULL };
+  VkPresentInfoKHR pi = { 1000001001, nw > 0 ? &regions : NULL, 1, &sem->h, 1,
+    &sc->h, &index, NULL };
   VkResult r = vkQueuePresentKHR((VkQueue)(intptr_t)d->x, &pi);
   if (r < 0 && r != -1000001004) {
     return vx_err(e, (u32)-r, "vkQueuePresentKHR", r);

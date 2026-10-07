@@ -800,7 +800,7 @@ def rendered(+g: Gpu) -> Gpu:
 # image at `stage`, its first use, then presenting) or, offscreen, on its
 # own.
 def submit.target(off: Bool, +g: Gpu, +dev: U32, +cmd: U32, +acq: U32, +fence: U32,
-  +sc: U32, +index: U32, +finished: U32, +acquired: U32, +stage: U32) -> IO(Gpu):
+  +sc: U32, +index: U32, +finished: U32, +acquired: U32, +stage: U32, rects: List<&2, U32>) -> IO(Gpu):
   match off:
     case True{}:
       do IO<Gpu>:
@@ -809,7 +809,7 @@ def submit.target(off: Bool, +g: Gpu, +dev: U32, +cmd: U32, +acq: U32, +fence: U
     case False{}:
       do IO<Gpu>:
         IO.try(Unit, N.vk_submit(dev, cmd, acq, stage, finished, fence))
-        +status : U32 <- IO.try(U32, N.vk_present(dev, sc, index, finished))
+        +status : U32 <- IO.try(U32, N.vk_present(dev, sc, index, finished, rects))
         presented(g, status, acquired)
 
 def draw.frame(fs: List<&2, Frame>, +g: Gpu, +dev: U32, +sc: U32, +index: U32,
@@ -829,7 +829,7 @@ def draw.frame(fs: List<&2, Frame>, +g: Gpu, +dev: U32, +sc: U32, +index: U32,
           pipe, layout, set, b, n, xw, xh, Bool.not(off)}))
         record(cmd, ops)
         submit.target(off, g, dev, cmd, acq, fence, sc, index, finished, acquired,
-          Vk.stage_color_output())
+          Vk.stage_color_output(), Nil{})
 
 # Records, submits and presents one frame into the acquired image. The
 # canvas does not see this frame, so it no longer holds the picture.
@@ -916,10 +916,27 @@ def paint.commands(direct: Bool, p: C.Paint, pass: C.Pass) -> List<&2, C.Cmd>:
     case False{}:
       C.paint(p)
 
+# The rectangles a partial paint changed, for the present (at most 64; past
+# that, none: the hint is optional).
+def rects.of(rs: List<&2, C.Range>) -> List<&2, U32>:
+  match rs:
+    case Nil{}:
+      Nil{}
+    case Con{C.Range{x, y, w, h, first, n}, rest}:
+      x <> y <> w <> h <> rects.of(rest)
+
+def rects.pick(on: Bool, +rs: List<&2, C.Range>) -> List<&2, U32>:
+  match on:
+    case False{}:
+      Nil{}
+    case True{}:
+      +ws = rects.of(rs)
+      Bool.pick(List<&2, U32>, U32.is_le(W.count(ws), 256), ws, Nil{})
+
 def paint.frame(fs: List<&2, Frame>, +g: Gpu, +dev: U32, +sc: U32, +index: U32,
   +acquired: U32, +image: U32, +view: U32, +finished: U32, +canvas: U32, +cview: U32,
   +tw: U32, +th: U32, +clear: U32, +pipe: U32, +layout: U32, +set: U32, +xw: U32, +xh: U32,
-  words: Array<U32>, +n: U32, ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
+  words: Array<U32>, +n: U32, +ranges: List<&2, C.Range>, +whole: Bool, +hint: Bool) -> IO(Gpu):
   match fs:
     case Nil{}:
       IO.die(Gpu, 1, "Voltra: no frame in flight")
@@ -936,7 +953,8 @@ def paint.frame(fs: List<&2, Frame>, +g: Gpu, +dev: U32, +sc: U32, +index: U32,
           C.Pass{image, view, tw, th, clear, pipe, layout, set, b, n, xw, xh, Bool.not(off)}))
         record(cmd, ops)
         submit.target(off, with_kept(g, Bool.not(direct)), dev, cmd, acq, fence, sc, index,
-          finished, acquired, Bool.pick(U32, direct, Vk.stage_color_output(), Vk.stage_transfer()))
+          finished, acquired, Bool.pick(U32, direct, Vk.stage_color_output(), Vk.stage_transfer()),
+          rects.pick(hint && Bool.not(whole) && Bool.not(direct), ranges))
 
 def paint.submit(+g: Gpu, +index: U32, +acquired: U32, words: Array<U32>, +n: U32,
   +clear: U32, ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
@@ -946,7 +964,8 @@ def paint.submit(+g: Gpu, +index: U32, +acquired: U32, words: Array<U32>, +n: U3
   Texture{img, mem, view, +xw, +xh} = tex
   +i = U32.to_nat(index)
   paint.frame(fs, g, dev, sc, index, acquired, W.at(images, i), W.at(views, i), W.at(done, i),
-    canvas.image(c), canvas.view(c), tw, th, clear, pipe, layout, set, xw, xh, words, n, ranges, whole)
+    canvas.image(c), canvas.view(c), tw, th, clear, pipe, layout, set, xw, xh, words, n, ranges, whole,
+    P.gpu.regions(gpu))
 
 def paint.acquired(ok: Bool, +g: Gpu, +index: U32, +status: U32, words: Array<U32>, +n: U32,
   +clear: U32, ranges: List<&2, C.Range>, +whole: Bool) -> IO(Gpu):
@@ -1182,10 +1201,11 @@ def open.device(+native: List<&2, U32>, +inst: U32, +layer: U32, +gpu: P.Gpu, +v
     +surface : U32 <- IO.try(U32, N.vk_surface(inst, native))
     +fams : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_queue_families(inst, index, surface))
     +family : U32 <- need(P.family(fams), "no queue family draws and presents to this window")
-    +dev : U32 <- IO.try(U32, N.vk_device(inst, index, family))
+    +made : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_device(inst, index, family, P.device_flags()))
+    +dev : U32 = W.at(made, 0n)
     +types : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_memory_types(dev))
-    open.objects(inst, layer, gpu, name, surface, dev, family, types, vsync, w, h,
-      [dev, surface, inst])
+    open.objects(inst, layer, P.gpu.with_regions(gpu, U32.is_eq(W.at(made, 1n), 1)), name, surface,
+      dev, family, types, vsync, w, h, [dev, surface, inst])
 
 def instance() -> IO(List<&2, U32>):
   IO.try(List<&2, U32>, N.vk_instance(1))
@@ -1216,7 +1236,8 @@ def open.offscreen_device(+inst: U32, +layer: U32, +gpu: P.Gpu, +w: U32, +h: U32
     +name : String <- IO.try(String, N.vk_gpu_name(inst, index))
     +fams : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_queue_families(inst, index, 0))
     +family : U32 <- need(P.graphics(fams), "no queue family draws")
-    +dev : U32 <- IO.try(U32, N.vk_device(inst, index, family))
+    +made : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_device(inst, index, family, 0))
+    +dev : U32 = W.at(made, 0n)
     +types : List<&2, U32> <- IO.try(List<&2, U32>, N.vk_memory_types(dev))
     open.offscreen_target(inst, layer, gpu, name, dev, family, types, w, h, [dev, inst])
 
