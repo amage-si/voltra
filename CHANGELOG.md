@@ -7,8 +7,7 @@ patch version (0.1.1) only fixes. Voltra is built from source together with its
 sibling AMAGE libraries; the set of versions tested together is listed in
 [eco-build's releases](https://github.com/amage-si/eco-build/tree/main/releases).
 
-## [Unreleased]
-
+## [0.1.2] - 2026-10-09
 ### Added
 
 - `examples/motion.bend`: a rect sliding for 2 s through Ankra's
@@ -49,5 +48,6 @@ of AMAGE Eco 0.1.0.
   offscreen targets and readback.
 - 79 native checks plus GPU checks, pixel-identical to the CPU reference.
 
+[0.1.2]: https://github.com/amage-si/voltra/releases/tag/v0.1.2
 [0.1.1]: https://github.com/amage-si/voltra/releases/tag/v0.1.1
 [0.1.0]: https://github.com/amage-si/voltra/releases/tag/v0.1.0
