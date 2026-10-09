@@ -189,28 +189,42 @@ type Pass is Data:
     pipeline: U32, layout: U32, set: U32, instances: U32, quads: U32,
     texture_width: U32, texture_height: U32, present: Bool}
 
-def frame(p: Pass) -> List<&2, Cmd>:
+# The pass with `draws` in place of its one draw of every quad (the frame's
+# buffer is bound; see `ranges`).
+def frame.drawing(p: Pass, draws: List<&2, Cmd>) -> List<&2, Cmd>:
   Pass{+image, view, +w, +h, clear, pipeline, +layout, set, buffer, quads, tw, th, present} = p
-  [to_render(image),
-   Render{view, w, h, Vk.load_clear(), clear},
-   Viewport{0, 0, w, h},
-   Scissor{0, 0, w, h},
-   Pipeline{pipeline},
-   Set{layout, set},
-   Push{layout, Vk.shader_vertex(), [w, h, tw, th]},
-   Vertices{0, buffer, 0},
-   Draw{6, quads, 0, 0},
-   EndRender{},
-   finish(present, image)]
+  to_render(image) <>
+  Render{view, w, h, Vk.load_clear(), clear} <>
+  Viewport{0, 0, w, h} <>
+  Scissor{0, 0, w, h} <>
+  Pipeline{pipeline} <>
+  Set{layout, set} <>
+  Push{layout, Vk.shader_vertex(), [w, h, tw, th]} <>
+  Vertices{0, buffer, 0} <>
+  List.append(&2, Cmd, draws, [EndRender{}, finish(present, image)])
+
+def frame.quads(p: Pass) -> U32:
+  Pass{image, view, w, h, clear, pipeline, layout, set, buffer, quads, tw, th, present} = p
+  quads
+
+def frame(+p: Pass) -> List<&2, Cmd>:
+  frame.drawing(p, [Draw{6, frame.quads(p), 0, 0}])
 
 # Painting a retained canvas
 # --------------------------
 
-# A rectangle of the target to redraw and the quads that redraw it: the
-# instances [first, first + count) of the frame's buffer, drawn with the
-# scissor set to the rectangle, so nothing outside it changes.
+# Instances [first, first + count) of the frame's buffer or, `stored`, of
+# the store: the buffer of quads kept on the GPU between frames (gpu.bend).
+type Run is Data:
+  Run{stored: Bool, first: U32, count: U32}
+
+# A rectangle of the target to redraw and the quads that redraw it, drawn
+# with the scissor set to the rectangle, so nothing outside it changes:
+# the instances [first, first + count) of the frame's buffer (`Range`), or
+# runs of the frame's buffer and of the store, in order (`Spans`).
 type Range is Data:
   Range{x: U32, y: U32, width: U32, height: U32, first: U32, count: U32}
+  Spans{x: U32, y: U32, width: U32, height: U32, runs: List<&2, Run>}
 
 # A frame painted on a canvas: an image that keeps its picture from one
 # frame to the next. `whole` clears the canvas to `clear` before the ranges
@@ -219,17 +233,46 @@ type Range is Data:
 # rectangles change. A swapchain frame then copies the canvas into the
 # acquired `image` and presents it; an offscreen canvas (`present` False,
 # `image` unused) ends ready for a readback, as `frame` leaves it.
+# `store` is the store's buffer (0: none; then no run may be stored).
 type Paint is Data:
   Paint{canvas: U32, view: U32, image: U32, width: U32, height: U32, clear: U32,
-    pipeline: U32, layout: U32, set: U32, instances: U32, texture_width: U32,
+    pipeline: U32, layout: U32, set: U32, instances: U32, store: U32, texture_width: U32,
     texture_height: U32, ranges: List<&2, Range>, whole: Bool, present: Bool}
 
-def ranges(rs: List<&2, Range>, tail: List<&2, Cmd>) -> List<&2, Cmd>:
+# The frame's buffer stays bound between ranges: runs bind the store only
+# while they draw from it, and give the frame's buffer back after.
+def runs.back(on_store: Bool, +buffer: U32, tail: List<&2, Cmd>) -> List<&2, Cmd>:
+  match on_store:
+    case False{}:
+      tail
+    case True{}:
+      Vertices{0, buffer, 0} <> tail
+
+def runs.bind(switch: Bool, +stored: Bool, +buffer: U32, +store: U32, tail: List<&2, Cmd>) ->
+  List<&2, Cmd>:
+  match switch:
+    case False{}:
+      tail
+    case True{}:
+      Vertices{0, Bool.pick(U32, stored, store, buffer), 0} <> tail
+
+def runs(rs: List<&2, Run>, +buffer: U32, +store: U32, +on_store: Bool, tail: List<&2, Cmd>) ->
+  List<&2, Cmd>:
+  match rs:
+    case Nil{}:
+      runs.back(on_store, buffer, tail)
+    case Con{Run{+stored, first, count}, rest}:
+      runs.bind(Bool.xor(stored, on_store), stored, buffer, store,
+        Draw{6, count, 0, first} <> runs(rest, buffer, store, stored, tail))
+
+def ranges(rs: List<&2, Range>, +buffer: U32, +store: U32, tail: List<&2, Cmd>) -> List<&2, Cmd>:
   match rs:
     case Nil{}:
       tail
     case Con{Range{x, y, w, h, first, count}, rest}:
-      Scissor{x, y, w, h} <> Draw{6, count, 0, first} <> ranges(rest, tail)
+      Scissor{x, y, w, h} <> Draw{6, count, 0, first} <> ranges(rest, buffer, store, tail)
+    case Con{Spans{x, y, w, h, ps}, rest}:
+      Scissor{x, y, w, h} <> runs(ps, buffer, store, False{}, ranges(rest, buffer, store, tail))
 
 # Every frame ends with the canvas in the transfer-source layout (copied
 # into the swapchain image, or read back), so a kept picture is loaded from
@@ -264,8 +307,8 @@ def painted(draws: Bool, p: Paint, tail: List<&2, Cmd>) -> List<&2, Cmd>:
     case False{}:
       tail
     case True{}:
-      Paint{+canvas, view, image, +w, +h, clear, pipeline, +layout, set, buffer, tw, th, rs, +whole,
-        present} = p
+      Paint{+canvas, view, image, +w, +h, clear, pipeline, +layout, set, +buffer, +store, tw, th, rs,
+        +whole, present} = p
       canvas.open(whole, canvas) <>
       Render{view, w, h, Bool.pick(U32, whole, Vk.load_clear(), Vk.load_load()), clear} <>
       Viewport{0, 0, w, h} <>
@@ -273,7 +316,7 @@ def painted(draws: Bool, p: Paint, tail: List<&2, Cmd>) -> List<&2, Cmd>:
       Set{layout, set} <>
       Push{layout, Vk.shader_vertex(), [w, h, tw, th]} <>
       Vertices{0, buffer, 0} <>
-      ranges(rs, EndRender{} <> canvas.close(canvas) <> tail)
+      ranges(rs, buffer, store, EndRender{} <> canvas.close(canvas) <> tail)
 
 def has_ranges(rs: List<&2, Range>) -> Bool:
   match rs:
@@ -283,6 +326,6 @@ def has_ranges(rs: List<&2, Range>) -> Bool:
       True{}
 
 def paint(+p: Paint) -> List<&2, Cmd>:
-  Paint{+canvas, view, +image, +w, +h, clear, pipeline, layout, set, buffer, tw, th, +rs, +whole,
+  Paint{+canvas, view, +image, +w, +h, clear, pipeline, layout, set, buffer, store, tw, th, +rs, +whole,
     present} = p
   painted(whole || has_ranges(rs), p, shown(present, canvas, image, w, h))

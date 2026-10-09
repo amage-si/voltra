@@ -344,6 +344,40 @@ def painted.with(+g: V.Gpu, +qs: List<&2, Q.Quad>, ranges: List<&2, C.Range>, +w
   rs: List<&2, V.Region>) -> IO(V.Gpu & Array<U32>):
   painted.words(g, Q.words(qs), ranges, whole, rs)
 
+def stored.of(+g: V.Gpu, ws: Array<U32> & U32) -> IO(V.Gpu & U32):
+  (a, +n) = ws
+  V.store(g, a, n)
+
+# Quads written to the store once, then drawn from it by later paints.
+def stored(+g: V.Gpu, +qs: List<&2, Q.Quad>) -> IO(V.Gpu & U32):
+  stored.of(g, Q.words(qs))
+
+def stored.paint(r: V.Gpu & U32, +bg: List<&2, Q.Quad>, +x: U32, +y: U32, +w: U32, +h: U32,
+  +whole: Bool) -> IO(V.Gpu & Array<U32>):
+  (+g, +first) = r
+  +n = U32.from_nat(List.length(&2, Q.Quad, bg))
+  painted(g, bg, [C.Spans{x, y, w, h, List.append(&2, C.Run, Bool.pick(List<&2, C.Run>, U32.is_eq(n, 0), [],
+    [C.Run{False{}, 0, n}]), [C.Run{True{}, first, 4}])}], whole)
+
+# The store: scene A stored and painted whole from it, then B stored after
+# it and painted over the changed box with a background quad from the
+# frame's buffer; each equals the frame drawn whole.
+def store(+g0: V.Gpu) -> IO(V.Gpu):
+  do IO<V.Gpu>:
+    +g1 : V.Gpu <- V.store_restart(g0, 8)
+    check(V.store_room(g1, 4096) && Bool.not(V.store_room(g1, 4097)), "store: room after a restart")
+    sa : V.Gpu & U32 <- stored(g1, flat.quads())
+    r1 : V.Gpu & Array<U32> <- stored.paint(sa, [], 0, 0, 256, 256, True{})
+    +g2 : V.Gpu <- diffed(~flat.expected, r1, "store: a whole paint of stored quads equals the drawn frame")
+    sb : V.Gpu & U32 <- stored(g2, flat.b())
+    r2 : V.Gpu & Array<U32> <- stored.paint(sb, [Q.fill(10, 10, 100, 60, background())], 10, 10, 100, 60, False{})
+    +g3 : V.Gpu <- diffed(~flat.b.expected, r2,
+      "store: stored quads redrawing a box over the kept picture equal the new frame drawn whole")
+    check(U32.is_eq(V.stored(g3), 8), "store: quads are appended")
+    +g4 : V.Gpu <- V.store_restart(g3, 8)
+    check(U32.is_eq(V.stored(g4), 0) && U32.is_eq(V.store_generation(g4), 2), "store: a restart empties it")
+    return g4
+
 def report.of(d: Diff, +total: U32, name: String) -> IO(Unit):
   Diff{+n, +w} = d
   check(U32.is_eq(n, 0), name ++ ": " ++ U32.show(n) ++ " of " ++ U32.show(total) ++
@@ -372,8 +406,9 @@ def canvas(+g0: V.Gpu) -> IO(V.Gpu):
     r3b : V.Gpu & Array<U32> <- painted.with(g3a, [Q.fill(40, 40, 16, 16, background()),
       Q.image(40, 40, 16, 16, 0, 0, 16, 16, white())], [C.Range{40, 40, 16, 16, 0, 2}], False{},
       [V.Region{0, 0, 16, 16, stamp.texels(256n)}])
-    +g3 : V.Gpu <- diffed(~uploaded.expected, r3b,
+    +g3b : V.Gpu <- diffed(~uploaded.expected, r3b,
       "paint: a texture region uploaded inside a partial paint is drawn by that paint")
+    +g3 : V.Gpu <- store(g3b)
     +g4 : V.Gpu <- V.resize(g3, 128, 96)
     check(Bool.not(V.kept(g4)), "resize: an offscreen target made again at a new size holds no picture")
     r4 : V.Gpu & Array<U32> <- painted(g4, flat.quads(), [C.Range{0, 0, 128, 96, 0, 4}], True{})

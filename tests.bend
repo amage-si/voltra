@@ -164,7 +164,7 @@ def frames3() -> List<&2, V.Frame>:
    V.Frame{3, 0, 0, V.Buffer{0, 0, 0}, 0}]
 
 def paint_of(rs: List<&2, C.Range>, +whole: Bool, +present: Bool) -> C.Paint:
-  C.Paint{21, 22, 23, 800, 600, 255, 13, 14, 15, 16, 64, 64, rs, whole, present}
+  C.Paint{21, 22, 23, 800, 600, 255, 13, 14, 15, 16, 17, 64, 64, rs, whole, present}
 
 def two_ranges() -> List<&2, C.Range>:
   [C.Range{10, 20, 30, 40, 0, 3}, C.Range{100, 0, 8, 8, 3, 2}]
@@ -199,6 +199,21 @@ def scissored(cs: List<&2, C.Cmd>) -> List<&2, U32>:
       n <> fi <> scissored(rest)
     case Con{c, rest}:
       scissored(rest)
+
+# The buffers bound for vertices, in order.
+def binds(cs: List<&2, C.Cmd>) -> List<&2, U32>:
+  match cs:
+    case Nil{}:
+      Nil{}
+    case Con{C.Vertices{b, buf, off}, rest}:
+      buf <> binds(rest)
+    case Con{c, rest}:
+      binds(rest)
+
+# A background quad from the frame's buffer, then two adjacent stored runs.
+def spans() -> List<&2, C.Range>:
+  [C.Spans{10, 20, 30, 40, [C.Run{False{}, 0, 1}, C.Run{True{}, 5, 3}, C.Run{True{}, 8, 2}]},
+   C.Range{100, 0, 8, 8, 1, 2}]
 
 def copies(cs: List<&2, C.Cmd>) -> List<&2, U32>:
   match cs:
@@ -342,7 +357,16 @@ def main() -> IO(Unit):
       U32.is_eq(last_layout(C.paint(paint_of(two_ranges(), False{}, False{})), 0), 6) &&
       same(copies(C.paint(paint_of(two_ranges(), False{}, False{}))), []),
       "commands: an offscreen canvas ends ready for readback, with nothing copied")
+    check(C.valid(C.paint(paint_of(spans(), False{}, True{}))) &&
+      same(scissored(C.paint(paint_of(spans(), False{}, True{}))), [10, 20, 30, 40, 1, 0, 3, 5, 2, 8, 100, 0, 8, 8,
+        2, 1]) &&
+      same(binds(C.paint(paint_of(spans(), False{}, True{}))), [16, 17, 16]),
+      "commands: spans draw stored runs from the store and give the frame's buffer back")
+    check(same(binds(C.frame.drawing(C.Pass{1, 2, 8, 8, 0, 3, 4, 5, 16, 0, 1, 1, True{}},
+      C.ranges(spans(), 16, 17, Nil{}))), [16, 17, 16]) &&
+      C.valid(C.frame.drawing(C.Pass{1, 2, 8, 8, 0, 3, 4, 5, 16, 0, 1, 1, True{}}, C.ranges(spans(), 16, 17, Nil{}))),
+      "commands: a frame without a canvas draws the ranges, stored runs included")
     check(same(pair_words(V.region_words([V.Region{0, 0, 2, 1, [1, 2]}, V.Region{5, 5, 1, 1, [3]}])), [3, 1, 2, 3]),
       "texels: regions' texels one after another in one array")
     check(same(V.rgba_view(37), [37, 6, 5, 4, 3, 1]), "texture: 0xRRGGBBAA words read through an A,B,G,R swizzle")
-    IO.print("77 Voltra checks passed (Bend-side logic; the GPU path is checked by gpu_tests.bend and the examples)")
+    IO.print("79 Voltra checks passed (Bend-side logic; the GPU path is checked by gpu_tests.bend and the examples)")

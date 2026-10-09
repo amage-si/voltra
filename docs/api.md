@@ -27,7 +27,9 @@ once.
 | `open_offscreen(w, h)` | `IO(Gpu)`. No window: frames are drawn into a `w` x `h` image in the swapchain format (B8G8R8A8), kept for `read`. `resize` makes it again at a new size. |
 | `describe(g)` | Device and target report as a `String`. |
 | `draw(g, quads, clear)` | `IO(Gpu)`. Clears to `clear` (`0xRRGGBBAA`), draws the quads in list order (later quads on top) in one instanced draw, and presents (offscreen: keeps the image). Rebuilds the swapchain when presentation is out of date or suboptimal. Does nothing while the window has no extent (minimized). The canvas does not see the frame: `kept` becomes False. |
-| `paint(g, words, n, clear, ranges, whole, regions)` | `IO(Gpu)`. Paints a frame on the canvas (see below): `words` holds `n` quads as `Q.put` writes them (an `Array<U32>`, which may be larger); each `C.Range{x, y, width, height, first, count}` redraws its rectangle with the instances `[first, first + count)`, scissored. `whole` clears the canvas to `clear` first; otherwise the canvas must be `kept`. `regions` (as for `update`) replace texture rectangles first, recorded in this frame's commands: the CPU does not wait for the device. The canvas is then copied into the acquired image and presented, naming the ranges' rectangles when the device enabled `VK_KHR_incremental_present` (offscreen: kept for `read`). |
+| `paint(g, words, n, clear, ranges, whole, regions)` | `IO(Gpu)`. Paints a frame on the canvas (see below): `words` holds `n` quads as `Q.put` writes them (an `Array<U32>`, which may be larger); each `C.Range{x, y, width, height, first, count}` redraws its rectangle with the instances `[first, first + count)`, scissored, and each `C.Spans{x, y, width, height, runs}` with its runs in order: `C.Run{stored, first, count}` draws instances of `words` or, `stored`, of the store (see below). `whole` clears the canvas to `clear` first; otherwise the canvas must be `kept`. `regions` (as for `update`) replace texture rectangles first, recorded in this frame's commands: the CPU does not wait for the device. The canvas is then copied into the acquired image and presented, naming the ranges' rectangles when the device enabled `VK_KHR_incremental_present` (offscreen: kept for `read`). |
+| `store(g, words, n)` | `IO(Gpu & U32)`. Appends `n` quads (written as `Q.put` does; the array may be larger) to the store, quads kept on the GPU between frames, and answers the index of the first: the `first` of a stored run. Does not wait: the words go after the stored ones, where no frame in flight reads. Needs `store_room(g, n)`. |
+| `store_restart(g, need)` | `IO(Gpu)`. Waits for the device and empties the store, leaving room for at least `2 * need` quads (a new buffer of `4 * need` when it is smaller; at least 4096). Every quad stored before is gone: `store_generation(g)` counts one more. |
 | `upload(g, w, h, pixels)` | `IO(Gpu)`. Replaces the texture with a row-major `w` x `h` RGBA8 image (`Array<U32>` of `0xRRGGBBAA` words; the array may be larger). Recreates the texture when the size changes. Synchronous. |
 | `blank(g, w, h)` | `IO(Gpu)`. A new `w` x `h` texture whose contents are undefined until `update` writes rectangles of it: an atlas. |
 | `update(g, regions)` | `IO(Gpu)`. Replaces rectangles of the texture in one transfer and keeps the rest. `Region{x, y, width, height, pixels}`, pixels row-major `0xRRGGBBAA`. Synchronous. |
@@ -41,7 +43,8 @@ waiting indefinitely), `kept(g)` (the canvas holds the last painted picture,
 so `paint` may redraw only part of it), `target_size(g)`, `window_size(g)` and
 `texture_size(g)` (`Size{width, height}`), `drawn(g)` (frames drawn),
 `rebuilds(g)` (swapchains rebuilt), `device(g)`, `swapchain(g)` (slot ids; 0
-means none), `drawable(g)`, `offscreen_target(g)`.
+means none), `drawable(g)`, `offscreen_target(g)`, `stored(g)` (quads in the
+store), `store_room(g, n)`, `store_generation(g)`.
 
 `Report{live, warnings, errors}`: native objects left after teardown (0 when
 nothing leaked) and the warnings and errors reported by the Vulkan debug
@@ -92,6 +95,17 @@ differs from the last one:
    `draw`), paint whole: `paint(g, words, n, clear, [C.Range{0, 0, w, h, 0,
    n}], True{}, regions)`.
 
+Quads that stay the same from frame to frame need not travel every frame:
+`store` writes them once into the store, a host-visible vertex buffer that
+lives as long as the context, and a `C.Spans` range draws them from there
+with stored runs (`C.Run{True{}, first, count}`) next to runs of the
+frame's own words (the background fill). Nothing in the store is freed one
+by one: quads are only appended, after the ones frames in flight may draw,
+so writing never races a frame; when a renderer needs more room than is
+left, `store_restart` waits for the device and starts the store over, and
+the renderer writes again what it draws. Chromi's `render` keeps each
+part's quads there.
+
 The present names the ranges' rectangles (`VK_KHR_incremental_present`),
 so the presentation engine may update only those; the whole image is still
 presented and correct. Chromi's `render` (Chromi `gpu.bend`) does all of
@@ -118,7 +132,7 @@ pixels whose centers lie inside it, minus those outside its clip box
 | `Q.rounded(x0, y0, x1, y1, r, rgba)` | A box in 1/8 pixels with corner radius `r` (1/8 pixels, at most half the shorter side). Coverage: 4x4 samples per pixel at 1/8, 3/8, 5/8, 7/8; a sample is inside when it is inside the box and, in a corner zone, within `r` of the corner's center. `h` hits give `c = (255 h + 8) / 16`, then alpha as for masks. |
 | `Q.ring(x0, y0, x1, y1, r, b, rgba)` | The same box minus the box inset by `b` with radius `max(r - b, 0)`. |
 | `Q.clipped(q, x0, y0, x1, y1)` | The quad with that clip box (the constructors' clip is unlimited). |
-| `Q.put(quads, array, i)` | Writes the quads' instance words, 16 per quad, into the array from word `i` on (what `paint` takes). |
+| `Q.put(quads, array, i)` | Writes the quads' instance words, 16 per quad, into the array from word `i` on (what `paint` and `store` take). |
 | `Q.words(quads)` | The quads' instance words in a new array (zero padded to a power of two), with the number of quads; what `draw` uploads. |
 | `Q.leaves(image, x, y, side, w, h, acc)` | Every leaf of a `Base.Image` quadtree as one opaque quad, clipped to `w` x `h`. |
 | `Q.raster(image, array, x, y, side, w, h)` | The quadtree as a row-major `w` x `h` RGBA8 array, ready for `upload`. |

@@ -53,9 +53,10 @@ Correct Bend is not fast Bend by default. Measured rules (Bend 2.0.35):
   `IO.now()`.
 
 Here: quads and texels reach the GPU as flat arrays (`Q.put`, `Q.words`,
-`region_words`); keep new upload and draw paths that way. Region pixels are
-still a `List` field (`Region` is `Data`), written straight into the array
-once.
+`region_words`); keep new upload and draw paths that way. Quads that stay
+the same between frames belong in the store (`store`, `C.Spans` runs), not
+in words sent again every frame. Region pixels are still a `List` field
+(`Region` is `Data`), written straight into the array once.
 
 ## Linux first
 
