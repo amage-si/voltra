@@ -52,9 +52,10 @@ Correct Bend is not fast Bend by default. Measured rules (Bend 2.0.35):
 - Measure before and after on the same input; print a result before the next
   `IO.now()`.
 
-Here: `paint` takes its words as one flat array; new upload and draw paths
-should do the same. Region texels and `draw` still pack through lists
-(`gpu.bend`, `quads.bend`): known debt, do not copy that pattern.
+Here: quads and texels reach the GPU as flat arrays (`Q.put`, `Q.words`,
+`region_words`); keep new upload and draw paths that way. Region pixels are
+still a `List` field (`Region` is `Data`), written straight into the array
+once.
 
 ## Linux first
 

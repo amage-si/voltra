@@ -1,4 +1,5 @@
 import Base
+import ./words.bend as W
 
 # Quads, the one primitive Voltra's pipeline draws, and the conversions from
 # Base.Image quadtrees into GPU-ready data.
@@ -86,13 +87,28 @@ def clipped(q: Quad, x0: U32, y0: U32, x1: U32, y1: U32) -> Quad:
 
 # Instance words, matching the pipeline's vertex input in gpu.bend:
 # ivec4 rect, ivec4 clip, uvec4 (color, kind, radius, border), ivec4 shape.
-def pack(qs: List<&2, Quad>) -> List<&2, U32>:
+# The quads are written into `a` from word i on, stride_words() per quad.
+def put(qs: List<&2, Quad>, a: Array<U32>, +i: U32) -> Array<U32>:
   match qs:
     case Nil{}:
-      Nil{}
-    case Con{Quad{x, y, w, h, a0, b0, a1, b1, color, kind, r, br, a, b, c, d}, rest}:
-      x <> y <> w <> h <> a0 <> b0 <> a1 <> b1 <> color <> kind <> r <> br <>
-        a <> b <> c <> d <> pack(rest)
+      a
+    case Con{Quad{x, y, w, h, a0, b0, a1, b1, color, kind, r, br, sa, sb, sc, sd}, rest}:
+      put(rest,
+        Array.set(U32, Array.set(U32, Array.set(U32, Array.set(U32,
+        Array.set(U32, Array.set(U32, Array.set(U32, Array.set(U32,
+        Array.set(U32, Array.set(U32, Array.set(U32, Array.set(U32,
+        Array.set(U32, Array.set(U32, Array.set(U32, Array.set(U32, a,
+          i, x), (i + 1 : U32), y), (i + 2 : U32), w), (i + 3 : U32), h),
+          (i + 4 : U32), a0), (i + 5 : U32), b0), (i + 6 : U32), a1), (i + 7 : U32), b1),
+          (i + 8 : U32), color), (i + 9 : U32), kind), (i + 10 : U32), r), (i + 11 : U32), br),
+          (i + 12 : U32), sa), (i + 13 : U32), sb), (i + 14 : U32), sc), (i + 15 : U32), sd),
+        (i + 16 : U32))
+
+# The quads as instance words in a new array (zero padded to a power of
+# two), with the number of quads.
+def words(+qs: List<&2, Quad>) -> Array<U32> & U32:
+  +n = U32.from_nat(List.length(&2, Quad, qs))
+  (put(qs, Array.new(U32, W.depth((n * stride_words() : U32)), 0), 0), n)
 
 # Base.Image leaves hold 0xRRGGBB (Chromi's `finish` output); the GPU path
 # takes opaque RGBA8.

@@ -698,12 +698,26 @@ def blank(+g: Gpu, +w: U32, +h: U32) -> IO(Gpu):
 type Region is Data:
   Region{x: U32, y: U32, width: U32, height: U32, pixels: List<&2, U32>}
 
-def region_words(rs: List<&2, Region>) -> List<&2, U32>:
+# Texels of the regions, and the quads they occupy after the instances.
+def texels(rs: List<&2, Region>, +acc: U32) -> U32:
   match rs:
     case Nil{}:
-      Nil{}
-    case Con{Region{x, y, w, h, px}, rest}:
-      List.append(&2, U32, px, region_words(rest))
+      acc
+    case Con{Region{x, y, +w, +h, px}, rest}:
+      texels(rest, (acc + w * h : U32))
+
+def texels.put(rs: List<&2, Region>, a: Array<U32>, +i: U32) -> Array<U32>:
+  match rs:
+    case Nil{}:
+      a
+    case Con{Region{x, y, +w, +h, px}, rest}:
+      texels.put(rest, W.fill(px, a, i), (i + w * h : U32))
+
+# The regions' texels, one after another, in a new array (zero padded to a
+# power of two), with their count.
+def region_words(+rs: List<&2, Region>) -> Array<U32> & U32:
+  +n = texels(rs, 0)
+  (texels.put(rs, Array.new(U32, W.depth(n), 0), 0), n)
 
 def patches(rs: List<&2, Region>, +offset: U32) -> List<&2, C.Patch>:
   match rs:
@@ -727,7 +741,7 @@ def update.some(any: Bool, +g: Gpu, +rs: List<&2, Region>) -> IO(Gpu):
     case False{}:
       IO.pure(Gpu, g)
     case True{}:
-      update.go(g, rs, W.to_array(region_words(rs)))
+      update.go(g, rs, region_words(rs))
 
 # Replaces rectangles of the texture in one transfer and keeps the rest.
 # Synchronous, as `upload`. Rectangles must lie inside the texture.
@@ -820,15 +834,16 @@ def submit.target(off: Bool, +g: Gpu, +dev: U32, +cmd: U32, +acq: U32, +fence: U
 def draw.frame(fs: List<&2, Frame>, +g: Gpu, +dev: U32, +sc: U32, +index: U32,
   +acquired: U32, +image: U32, +view: U32, +finished: U32, +tw: U32, +th: U32,
   +clear: U32, +pipe: U32, +layout: U32, +set: U32, +xw: U32, +xh: U32,
-  words: List<&2, U32>, +n: U32) -> IO(Gpu):
+  words: Array<U32> & U32) -> IO(Gpu):
   match fs:
     case Nil{}:
       IO.die(Gpu, 1, "Voltra: no frame in flight")
     case Con{Frame{+cmd, +fence, +acq, Buffer{+b, +m, bytes}, cap}, rest}:
+      (a, +n) = words
       +off = offscreen_target(g)
       do IO<Gpu>:
-        wr : Array<U32> & Result<&1, &1, U32 & String, Unit> <- N.vk_write(m, 0,
-          first(W.to_array(words)), (n * Q.stride_words() : U32))
+        wr : Array<U32> & Result<&1, &1, U32 & String, Unit> <- N.vk_write(m, 0, a,
+          (n * Q.stride_words() : U32))
         settle(Unit, wr)
         ops : Array<U32> & U32 <- checked(C.frame(C.Pass{image, view, tw, th, clear,
           pipe, layout, set, b, n, xw, xh, Bool.not(off)}))
@@ -845,10 +860,8 @@ def draw.submit(+g: Gpu, +index: U32, +acquired: U32, quads: List<&2, Q.Quad>,
   Target{+sc, fmt, +tw, +th, +images, +views, +done, m, c} = t
   Texture{img, mem, view, +xw, +xh} = tex
   +i = U32.to_nat(index)
-  +words = Q.pack(quads)
-  +n = (W.count(words) / Q.stride_words() : U32)
   draw.frame(fs, with_kept(g, False{}), dev, sc, index, acquired, W.at(images, i), W.at(views, i),
-    W.at(done, i), tw, th, clear, pipe, layout, set, xw, xh, words, n)
+    W.at(done, i), tw, th, clear, pipe, layout, set, xw, xh, Q.words(quads))
 
 def frame_sync(fs: List<&2, Frame>) -> List<&2, U32>:
   match fs:
@@ -950,7 +963,7 @@ def paint.texels(any: Bool, +m: U32, +offset: U32, rs: List<&2, Region>) -> IO(U
     case False{}:
       IO.pure(Unit, Unit{})
     case True{}:
-      paint.texels.write(m, offset, W.to_array(region_words(rs)))
+      paint.texels.write(m, offset, region_words(rs))
 
 # The regions' copies into the atlas texture, recorded before the frame's
 # drawing: the texture leaves its sampled layout once earlier frames are
@@ -1003,14 +1016,6 @@ def paint.submit(+g: Gpu, +index: U32, +acquired: U32, words: Array<U32>, +n: U3
     canvas.image(c), canvas.view(c), tw, th, clear, pipe, layout, set, xw, xh, words, n, ranges, whole,
     P.gpu.regions(gpu), img, rs)
 
-# Texels of the regions, and the quads they occupy after the instances.
-def texels(rs: List<&2, Region>, +acc: U32) -> U32:
-  match rs:
-    case Nil{}:
-      acc
-    case Con{Region{x, y, +w, +h, px}, rest}:
-      texels(rest, (acc + w * h : U32))
-
 def paint.acquired(ok: Bool, +g: Gpu, +index: U32, +status: U32, words: Array<U32>, +n: U32,
   +clear: U32, ranges: List<&2, C.Range>, +whole: Bool, +rs: List<&2, Region>) -> IO(Gpu):
   match ok:
@@ -1059,7 +1064,7 @@ def paint.ready(ok: Bool, fits: Bool, +g: Gpu, words: Array<U32>, +n: U32, +clea
       paint.go(offscreen_target(g), g, frame_sync(frames_of(g)), words, n, clear, ranges, whole, rs)
 
 # Paints a frame over the canvas, which keeps the picture between frames:
-# `words` holds `n` quads packed as Q.pack does (the array may be larger),
+# `words` holds `n` quads as Q.put writes them (the array may be larger),
 # and each range redraws its rectangle with its instances, scissored, so
 # the rest of the picture stays as it was; `whole` clears the canvas to
 # `clear` first (use one range over the whole target). `rs` are texture

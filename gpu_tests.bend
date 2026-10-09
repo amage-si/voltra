@@ -313,13 +313,16 @@ def small.expected(at: U32) -> U32:
   +i = at
   flat.expected(((i % 128 : U32) + (i / 128 : U32) * 256 : U32))
 
-def painted(+g: V.Gpu, qs: List<&2, Q.Quad>, ranges: List<&2, C.Range>, +whole: Bool) ->
-  IO(V.Gpu & Array<U32>):
-  +ws = Q.pack(qs)
+def painted.words(+g: V.Gpu, ws: Array<U32> & U32, ranges: List<&2, C.Range>, +whole: Bool,
+  rs: List<&2, V.Region>) -> IO(V.Gpu & Array<U32>):
+  (a, +n) = ws
   do IO<V.Gpu & Array<U32>>:
-    +g1 : V.Gpu <- V.paint(g, V.first(W.to_array(ws)), (W.count(ws) / Q.stride_words() : U32),
-      background(), ranges, whole, Nil{})
+    +g1 : V.Gpu <- V.paint(g, a, n, background(), ranges, whole, rs)
     V.read(g1)
+
+def painted(+g: V.Gpu, +qs: List<&2, Q.Quad>, ranges: List<&2, C.Range>, +whole: Bool) ->
+  IO(V.Gpu & Array<U32>):
+  painted.words(g, Q.words(qs), ranges, whole, Nil{})
 
 # A 16x16 texture region of one color, uploaded inside a partial paint and
 # drawn there by an image quad at (40, 40) over scene B.
@@ -337,13 +340,9 @@ def uploaded.expected(at: U32) -> U32:
   +i = at
   Bool.pick(U32, inside((i % 256 : U32), (i / 256 : U32), 40, 40, 56, 56), stamp_color(), flat.b.expected(i))
 
-def painted.with(+g: V.Gpu, qs: List<&2, Q.Quad>, ranges: List<&2, C.Range>, +whole: Bool,
+def painted.with(+g: V.Gpu, +qs: List<&2, Q.Quad>, ranges: List<&2, C.Range>, +whole: Bool,
   rs: List<&2, V.Region>) -> IO(V.Gpu & Array<U32>):
-  +ws = Q.pack(qs)
-  do IO<V.Gpu & Array<U32>>:
-    +g1 : V.Gpu <- V.paint(g, V.first(W.to_array(ws)), (W.count(ws) / Q.stride_words() : U32),
-      background(), ranges, whole, rs)
-    V.read(g1)
+  painted.words(g, Q.words(qs), ranges, whole, rs)
 
 def report.of(d: Diff, +total: U32, name: String) -> IO(Unit):
   Diff{+n, +w} = d

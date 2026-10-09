@@ -59,6 +59,14 @@ def pair_words(r: Array<U32> & U32) -> List<&2, U32>:
   (a, +n) = r
   n <> array_words(U32.to_nat(n), a, 0)
 
+# The quads' instance words, read back from the array Q.words fills.
+def packed.of(r: Array<U32> & U32) -> List<&2, U32>:
+  (a, +n) = r
+  array_words(U32.to_nat((n * Q.stride_words() : U32)), a, 0)
+
+def packed(+qs: List<&2, Q.Quad>) -> List<&2, U32>:
+  packed.of(Q.words(qs))
+
 # A discrete Vulkan 1.4 GPU, an integrated 1.3 one, a discrete 1.2 one.
 def gpu_words() -> List<&2, U32>:
   [3,
@@ -139,7 +147,7 @@ def tree() -> Image:
   Qua{Pix{16711680}, Qua{Pix{255}, Pix{255}, Pix{65280}, Pix{255}}, Pix{0}, Pix{16777215}}
 
 def leaf_words(+w: U32, +h: U32) -> List<&2, U32>:
-  Q.pack(Q.leaves(tree(), 0, 0, 4, w, h, []))
+  packed(Q.leaves(tree(), 0, 0, 4, w, h, []))
 
 def raster_words(+w: U32, +h: U32) -> List<&2, U32>:
   array_words(U32.to_nat((w * h : U32)), Q.raster(tree(), Array.new(U32, 4n, 0), 0, 0, 4, w, h), 0)
@@ -263,16 +271,16 @@ def main() -> IO(Unit):
     check(same(upload_layouts(C.upload(5, 6, 8, 8)), [0, 7, 7, 5, 5, 5, 5]),
       "commands: upload goes UNDEFINED -> TRANSFER_DST -> SHADER_READ")
     # quads.bend
-    check(same(Q.pack([Q.fill(1, 2, 3, 4, 5)]), [1, 2, 3, 4, 2147483648, 2147483648, 2147483647, 2147483647,
+    check(same(packed([Q.fill(1, 2, 3, 4, 5)]), [1, 2, 3, 4, 2147483648, 2147483648, 2147483647, 2147483647,
       5, 0, 0, 0, 0, 0, 0, 0]), "quads: flat quad words, unclipped")
-    check(same(Q.pack([Q.image(1, 2, 3, 4, 5, 6, 7, 8, 9)]), [1, 2, 3, 4, 2147483648, 2147483648, 2147483647,
+    check(same(packed([Q.image(1, 2, 3, 4, 5, 6, 7, 8, 9)]), [1, 2, 3, 4, 2147483648, 2147483648, 2147483647,
       2147483647, 9, 1, 0, 0, 5, 6, 7, 8]), "quads: textured quad words")
-    check(same(W.drop(Q.pack([Q.mask(1, 2, 3, 4, 5, 6, 7)]), 8n), [7, 2, 0, 0, 5, 6, 3, 4]), "quads: coverage quad words")
-    check(same(W.take(W.drop(Q.pack([Q.clipped(Q.fill(0, 0, 9, 9, 1), 2, 3, 4, 5)]), 4n), 4n), [2, 3, 4, 5]),
+    check(same(W.drop(packed([Q.mask(1, 2, 3, 4, 5, 6, 7)]), 8n), [7, 2, 0, 0, 5, 6, 3, 4]), "quads: coverage quad words")
+    check(same(W.take(W.drop(packed([Q.clipped(Q.fill(0, 0, 9, 9, 1), 2, 3, 4, 5)]), 4n), 4n), [2, 3, 4, 5]),
       "quads: clip box")
-    check(same(W.take(Q.pack([Q.rounded(4294967284, 9, 17, 24, 4, 1)]), 4n), [4294967294, 1, 5, 2]),
+    check(same(W.take(packed([Q.rounded(4294967284, 9, 17, 24, 4, 1)]), 4n), [4294967294, 1, 5, 2]),
       "quads: rounded box covers its pixels, also left of the origin")
-    check(same(W.drop(Q.pack([Q.ring(0, 0, 80, 40, 16, 8, 1)]), 8n), [1, 4, 16, 8, 0, 0, 80, 40]),
+    check(same(W.drop(packed([Q.ring(0, 0, 80, 40, 16, 8, 1)]), 8n), [1, 4, 16, 8, 0, 0, 80, 40]),
       "quads: ring words")
     check(U32.is_eq(Q.floor8(4294967295), 4294967295) && U32.is_eq(Q.ceil8(4294967295), 0) &&
       U32.is_eq(Q.floor8(15), 1) && U32.is_eq(Q.ceil8(15), 2) && U32.is_eq(Q.ceil8(16), 2), "quads: signed eighths")
@@ -334,5 +342,7 @@ def main() -> IO(Unit):
       U32.is_eq(last_layout(C.paint(paint_of(two_ranges(), False{}, False{})), 0), 6) &&
       same(copies(C.paint(paint_of(two_ranges(), False{}, False{}))), []),
       "commands: an offscreen canvas ends ready for readback, with nothing copied")
+    check(same(pair_words(V.region_words([V.Region{0, 0, 2, 1, [1, 2]}, V.Region{5, 5, 1, 1, [3]}])), [3, 1, 2, 3]),
+      "texels: regions' texels one after another in one array")
     check(same(V.rgba_view(37), [37, 6, 5, 4, 3, 1]), "texture: 0xRRGGBBAA words read through an A,B,G,R swizzle")
-    IO.print("76 Voltra checks passed (Bend-side logic; the GPU path is checked by gpu_tests.bend and the examples)")
+    IO.print("77 Voltra checks passed (Bend-side logic; the GPU path is checked by gpu_tests.bend and the examples)")
