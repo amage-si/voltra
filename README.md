@@ -11,7 +11,7 @@ frame can redraw only the rectangles that changed and tell the compositor
 which ones they were. Then it presents, resizes and tears down cleanly. The library is written in Bend 2; the only native code is a thin,
 documented bridge of Vulkan calls exposed as Bend effects.
 
-**Status:** early Linux implementation, tested with **Bend 2.0.35** on an
+**Status:** early Linux implementation, tested with **Bend 2.0.36** on an
 NVIDIA GeForce RTX 3050 Laptop GPU (driver 610.57.04, Vulkan 1.4.341) under
 Hyprland/XWayland. The first priority is a polished, measured experience on
 the development Linux machine. Compatibility layers will follow proven progress.

@@ -34,6 +34,9 @@ lane) fails cleanly. The effects are declared in [native.bend](../native.bend).
   22 (EINVAL) for a bad slot or argument, 24 (EMFILE) when the slot table is
   full, 95 (ENOTSUP) for a missing loader or an unsupported native window
   kind.
+- **Registration.** Each effect registers as `io_eff(CID(name), run)` (the
+  Bend 2.0.36 form) and answers at once; none parks. `vk_wait` blocks in
+  `vkWaitForFences` for at most its `ms`.
 
 Size: 1,940 lines (1,556 non-blank, non-comment). About 500 of them are the
 Vulkan declarations and the entry-point table, about 140 the slot table and

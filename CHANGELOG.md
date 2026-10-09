@@ -7,6 +7,15 @@ patch version (0.1.1) only fixes. Voltra is built from source together with its
 sibling AMAGE libraries; the set of versions tested together is listed in
 [eco-build's releases](https://github.com/amage-si/eco-build/tree/main/releases).
 
+## [0.1.1] - 2026-10-09
+
+### Changed
+
+- Build with Bend 2.0.36: the native bridge registers its 38 effects as
+  `io_eff(CID(name), run)`, the form 2.0.36 requires (upstream #1281 removed
+  the third `need` argument). No effect parks, so behaviour is unchanged. No
+  API change.
+
 ## [0.1.0] - 2026-10-09
 
 First tagged release, tested with Bend 2.0.35 on Linux (X11/XWayland) as part
@@ -26,4 +35,5 @@ of AMAGE Eco 0.1.0.
   offscreen targets and readback.
 - 79 native checks plus GPU checks, pixel-identical to the CPU reference.
 
+[0.1.1]: https://github.com/amage-si/voltra/releases/tag/v0.1.1
 [0.1.0]: https://github.com/amage-si/voltra/releases/tag/v0.1.0

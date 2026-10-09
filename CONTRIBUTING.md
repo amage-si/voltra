@@ -1,6 +1,6 @@
 # Contributing to Voltra
 
-Use Bend 2.0.35 for the current baseline. Read `bend guide` and
+Use Bend 2.0.36 for the current baseline. Read `bend guide` and
 `bend guide effects` before editing Bend or the bridge, and keep project text
 in English. Library logic belongs in Bend; the native bridge stays a thin
 layer of Vulkan calls. Windows come from Ankra (clone it beside Voltra).
