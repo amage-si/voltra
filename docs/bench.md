@@ -59,7 +59,8 @@ Reading the table:
   this content, and slower than before the pipeline's quads grew from 10 to
   16 words (5.15–5.23 ms earlier the same day). Leaves suit frames with few
   uniform regions; whole UI frames go through Chromi's draw list instead.
-- Under FIFO, 600 frames took 4.5 s (about 132 fps on this 120 Hz machine).
+- Under FIFO, 600 frames took 4.5 s (about 132 fps on this 120 Hz machine);
+  see [Animation pacing](#animation-pacing).
 
 Earlier runs the same day, with Voltra still opening its own window,
 measured 2.9–4.9 s under FIFO and 1150–1250 µs per frame for `xput`.
@@ -75,6 +76,44 @@ inside the process wake on their own: `[vkrt]` about 10 times per second,
 `[vkps]` about 4, and one unnamed thread about 100. The official loop with
 unchanged content keeps presenting about 58 frames per second (75–97 ticks
 per 10 s for that demo's scene).
+
+## Animation pacing
+
+How animated frames reach the screen with FIFO under XWayland, measured with
+`examples/motion.bend` (one rounded rect sliding 520 px in 2 s at 720x400,
+the window floating on the visible workspace of the 120 Hz eDP-1 panel,
+never focused) and eco-bench's present-log layer (CLOCK_MONOTONIC around
+`vkQueuePresentKHR` and `vkAcquireNextImageKHR`). CPU from each thread's
+`schedstat`, from the first present to 4 s after launch; idle over the next
+5 s. Three runs each; samples with pointer or focus activity were discarded.
+
+| | Ankra's frame grid (`motion log`) | Back to back (`motion fifo log`) |
+| --- | --- | --- |
+| Frames for the 2 s slide | 241, 241, 241 | 436, 415, 358 |
+| Present interval p50 / p99 | 8.43-8.47 / 9.55-9.62 ms | 4.9-6.7 / 8.8-11.2 ms, p1 0.23-0.32 ms |
+| Intervals of 1.5 periods or more | 0 | 1-2 |
+| Frame time vs. present, deviation p99 | 0.54-0.63 ms | 5.0-6.6 ms |
+| Blocked in acquire, p50 | 0.03 ms | 4.6-5.9 ms |
+| Main-thread CPU per frame | 0.40-0.46 ms | 0.33-0.52 ms |
+| Idle 5 s after: frames, main-thread wakeups | 0, 0 | 0, 0 |
+
+FIFO with two frames in flight does not hold the app to the refresh rate
+here: back to back it presented 180-218 frames a second (an earlier 600-frame
+run: 132), some pairs 0.25 ms apart, while the thread spent most of each
+frame blocked in acquire, where it reads no input. Ankra's loop instead
+sleeps in its event wait until about 1 ms before each frame of a grid of the
+monitor's refresh period (RandR) and draws then: 120 frames a second,
+none dropped, acquire never blocks. On HDMI-A-1 (window moved there): p50
+8.44 ms, p99 9.56 ms.
+
+`VK_KHR_present_wait` (and `present_wait2`/`present_id2`) is offered for X11
+surfaces by driver 610.57 and was tried by a measuring layer that enabled it
+and waited for each present id: presents completed 0.03 ms (p50) after
+`vkQueuePresentKHR` returned, because XWayland copies and completes at once,
+so it says nothing about vblank. `VK_EXT_present_timing` on the X11 surface
+offers only the queue-operations-end stage and no target times. Voltra does
+not enable either; pacing stays with Ankra's loop and FIFO stays the present
+mode.
 
 ## Pixel check
 

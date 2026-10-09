@@ -98,6 +98,11 @@ How it was verified on the development machine:
   (3,400 to 4,900 pixels) instead of the whole 900x560 window (504,000
   pixels) as without the extension, so XWayland hands the compositor about
   a hundredth of the window to recompose.
+- **Animation:** `examples/motion.bend` (a rect sliding for 2 s through
+  Ankra's `Loop.animate`) presented 241 frames per slide at a p50 interval
+  of 8.43-8.47 ms and p99 9.55-9.62 ms on the 120 Hz panel, none dropped,
+  then 0 frames and 0 main-thread wakeups; captures mid-slide and at rest
+  (`grim -T`) show the rect moving and resting at x = 560.
 - **Pixel-exact:** the GPU-presented Chromi frame equals the CPU reference
   written by `examples/reference.bend` (`magick compare -metric AE` 0).
 - **Teardown:** every run ended with 0 native objects left and 0 driver
@@ -236,8 +241,12 @@ Vulkan types it uses, checked against the Khronos headers by
   900x560); the present names only the changed rectangles.
 - Hard failures (a Vulkan error, no usable GPU) end the program with the
   driver's message instead of returning an error value.
-- Under FIFO on XWayland, 600 frames took 4.5 s (about 132 fps on this 120 Hz
-  machine); frame pacing is left to the compositor and was not tuned.
+- Under FIFO on XWayland, drawing back to back is not held to the refresh
+  rate (180-218 frames a second measured on this 120 Hz panel). Animation is
+  paced by Ankra's loop instead (a timed grid of the monitor's refresh
+  period: 120 frames a second, p99 interval 9.6 ms, none dropped; see
+  [docs/bench.md](docs/bench.md#animation-pacing)). No vblank feedback is
+  available on XWayland: present_wait completes at once there.
 - Pixel-exact blending was verified on one GPU and driver; other drivers may
   round the blend differently (Vulkan only says they should round to nearest).
 - The Khronos validation layer was not installed during development; only
@@ -261,7 +270,7 @@ Vulkan types it uses, checked against the Khronos headers by
 | [shaders/](shaders/) | GLSL sources, SPIR-V and the reproducible build script. |
 | [tests.bend](tests.bend) | Native checks that run without a display or GPU. |
 | [gpu_tests.bend](gpu_tests.bend) | Offscreen pixel checks of every quad kind (GPU, no display). |
-| [examples/](examples/) | Hello, quads, the Chromi frame on the GPU, the CPU reference. |
+| [examples/](examples/) | Hello, quads, motion (paced animation), the Chromi frame on the GPU, the CPU reference. |
 | [bench/](bench/) | The `XPutImage` and GPU presentation benchmarks. |
 | [docs/](docs/) | API, bridge and benchmark references. |
 
