@@ -726,7 +726,7 @@ Term vx_vk_instance_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_instance_use(void) {
-  io_eff(CID(vk_instance), vx_vk_instance_run, 0);
+  io_eff(CID(vk_instance), vx_vk_instance_run);
 }
 
 #endif
@@ -771,7 +771,7 @@ Term vx_vk_gpus_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_gpus_use(void) {
-  io_eff(CID(vk_gpus), vx_vk_gpus_run, 0);
+  io_eff(CID(vk_gpus), vx_vk_gpus_run);
 }
 
 #endif
@@ -790,7 +790,7 @@ Term vx_vk_gpu_name_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_gpu_name_use(void) {
-  io_eff(CID(vk_gpu_name), vx_vk_gpu_name_run, 0);
+  io_eff(CID(vk_gpu_name), vx_vk_gpu_name_run);
 }
 
 #endif
@@ -823,7 +823,7 @@ Term vx_vk_surface_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_surface_use(void) {
-  io_eff(CID(vk_surface), vx_vk_surface_run, 0);
+  io_eff(CID(vk_surface), vx_vk_surface_run);
 }
 
 #endif
@@ -855,7 +855,7 @@ Term vx_vk_queue_families_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_queue_families_use(void) {
-  io_eff(CID(vk_queue_families), vx_vk_queue_families_run, 0);
+  io_eff(CID(vk_queue_families), vx_vk_queue_families_run);
 }
 
 #endif
@@ -906,7 +906,7 @@ Term vx_vk_device_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_device_use(void) {
-  io_eff(CID(vk_device), vx_vk_device_run, 0);
+  io_eff(CID(vk_device), vx_vk_device_run);
 }
 
 #endif
@@ -937,7 +937,7 @@ Term vx_vk_memory_types_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_memory_types_use(void) {
-  io_eff(CID(vk_memory_types), vx_vk_memory_types_run, 0);
+  io_eff(CID(vk_memory_types), vx_vk_memory_types_run);
 }
 
 #endif
@@ -987,7 +987,7 @@ Term vx_vk_surface_info_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_surface_info_use(void) {
-  io_eff(CID(vk_surface_info), vx_vk_surface_info_run, 0);
+  io_eff(CID(vk_surface_info), vx_vk_surface_info_run);
 }
 
 #endif
@@ -1015,7 +1015,7 @@ Term vx_vk_swapchain_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_swapchain_use(void) {
-  io_eff(CID(vk_swapchain), vx_vk_swapchain_run, 0);
+  io_eff(CID(vk_swapchain), vx_vk_swapchain_run);
 }
 
 #endif
@@ -1042,7 +1042,7 @@ Term vx_vk_swapchain_images_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_swapchain_images_use(void) {
-  io_eff(CID(vk_swapchain_images), vx_vk_swapchain_images_run, 0);
+  io_eff(CID(vk_swapchain_images), vx_vk_swapchain_images_run);
 }
 
 #endif
@@ -1069,7 +1069,7 @@ Term vx_vk_acquire_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_acquire_use(void) {
-  io_eff(CID(vk_acquire), vx_vk_acquire_run, 0);
+  io_eff(CID(vk_acquire), vx_vk_acquire_run);
 }
 
 #endif
@@ -1107,7 +1107,7 @@ Term vx_vk_present_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_present_use(void) {
-  io_eff(CID(vk_present), vx_vk_present_run, 0);
+  io_eff(CID(vk_present), vx_vk_present_run);
 }
 
 #endif
@@ -1134,7 +1134,7 @@ Term vx_vk_buffer_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_buffer_use(void) {
-  io_eff(CID(vk_buffer), vx_vk_buffer_run, 0);
+  io_eff(CID(vk_buffer), vx_vk_buffer_run);
 }
 
 #endif
@@ -1162,7 +1162,7 @@ Term vx_vk_image_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_image_use(void) {
-  io_eff(CID(vk_image), vx_vk_image_run, 0);
+  io_eff(CID(vk_image), vx_vk_image_run);
 }
 
 #endif
@@ -1187,7 +1187,7 @@ Term vx_vk_alloc_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_alloc_use(void) {
-  io_eff(CID(vk_alloc), vx_vk_alloc_run, 0);
+  io_eff(CID(vk_alloc), vx_vk_alloc_run);
 }
 
 #endif
@@ -1209,7 +1209,7 @@ Term vx_vk_bind_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_bind_use(void) {
-  io_eff(CID(vk_bind), vx_vk_bind_run, 0);
+  io_eff(CID(vk_bind), vx_vk_bind_run);
 }
 
 #endif
@@ -1229,7 +1229,7 @@ Term vx_vk_map_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_map_use(void) {
-  io_eff(CID(vk_map), vx_vk_map_run, 0);
+  io_eff(CID(vk_map), vx_vk_map_run);
 }
 
 #endif
@@ -1257,7 +1257,7 @@ Term vx_vk_write_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_write_use(void) {
-  io_eff(CID(vk_write), vx_vk_write_run, 0);
+  io_eff(CID(vk_write), vx_vk_write_run);
 }
 
 #endif
@@ -1286,7 +1286,7 @@ Term vx_vk_read_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_read_use(void) {
-  io_eff(CID(vk_read), vx_vk_read_run, 0);
+  io_eff(CID(vk_read), vx_vk_read_run);
 }
 
 #endif
@@ -1310,7 +1310,7 @@ Term vx_vk_image_view_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_image_view_use(void) {
-  io_eff(CID(vk_image_view), vx_vk_image_view_run, 0);
+  io_eff(CID(vk_image_view), vx_vk_image_view_run);
 }
 
 #endif
@@ -1333,7 +1333,7 @@ Term vx_vk_sampler_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_sampler_use(void) {
-  io_eff(CID(vk_sampler), vx_vk_sampler_run, 0);
+  io_eff(CID(vk_sampler), vx_vk_sampler_run);
 }
 
 #endif
@@ -1364,7 +1364,7 @@ Term vx_vk_set_layout_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_set_layout_use(void) {
-  io_eff(CID(vk_set_layout), vx_vk_set_layout_run, 0);
+  io_eff(CID(vk_set_layout), vx_vk_set_layout_run);
 }
 
 #endif
@@ -1391,7 +1391,7 @@ Term vx_vk_descriptor_pool_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_descriptor_pool_use(void) {
-  io_eff(CID(vk_descriptor_pool), vx_vk_descriptor_pool_run, 0);
+  io_eff(CID(vk_descriptor_pool), vx_vk_descriptor_pool_run);
 }
 
 #endif
@@ -1415,7 +1415,7 @@ Term vx_vk_descriptor_set_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_descriptor_set_use(void) {
-  io_eff(CID(vk_descriptor_set), vx_vk_descriptor_set_run, 0);
+  io_eff(CID(vk_descriptor_set), vx_vk_descriptor_set_run);
 }
 
 #endif
@@ -1441,7 +1441,7 @@ Term vx_vk_write_image_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_write_image_use(void) {
-  io_eff(CID(vk_write_image), vx_vk_write_image_run, 0);
+  io_eff(CID(vk_write_image), vx_vk_write_image_run);
 }
 
 #endif
@@ -1468,7 +1468,7 @@ Term vx_vk_shader_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_shader_use(void) {
-  io_eff(CID(vk_shader), vx_vk_shader_run, 0);
+  io_eff(CID(vk_shader), vx_vk_shader_run);
 }
 
 #endif
@@ -1492,7 +1492,7 @@ Term vx_vk_pipeline_layout_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_pipeline_layout_use(void) {
-  io_eff(CID(vk_pipeline_layout), vx_vk_pipeline_layout_run, 0);
+  io_eff(CID(vk_pipeline_layout), vx_vk_pipeline_layout_run);
 }
 
 #endif
@@ -1555,7 +1555,7 @@ Term vx_vk_pipeline_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_pipeline_use(void) {
-  io_eff(CID(vk_pipeline), vx_vk_pipeline_run, 0);
+  io_eff(CID(vk_pipeline), vx_vk_pipeline_run);
 }
 
 #endif
@@ -1579,7 +1579,7 @@ Term vx_vk_command_pool_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_command_pool_use(void) {
-  io_eff(CID(vk_command_pool), vx_vk_command_pool_run, 0);
+  io_eff(CID(vk_command_pool), vx_vk_command_pool_run);
 }
 
 #endif
@@ -1601,7 +1601,7 @@ Term vx_vk_command_buffer_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_command_buffer_use(void) {
-  io_eff(CID(vk_command_buffer), vx_vk_command_buffer_run, 0);
+  io_eff(CID(vk_command_buffer), vx_vk_command_buffer_run);
 }
 
 #endif
@@ -1753,7 +1753,7 @@ Term vx_vk_record_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_record_use(void) {
-  io_eff(CID(vk_record), vx_vk_record_run, 0);
+  io_eff(CID(vk_record), vx_vk_record_run);
 }
 
 #endif
@@ -1772,7 +1772,7 @@ Term vx_vk_semaphore_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_semaphore_use(void) {
-  io_eff(CID(vk_semaphore), vx_vk_semaphore_run, 0);
+  io_eff(CID(vk_semaphore), vx_vk_semaphore_run);
 }
 
 #endif
@@ -1791,7 +1791,7 @@ Term vx_vk_fence_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_fence_use(void) {
-  io_eff(CID(vk_fence), vx_vk_fence_run, 0);
+  io_eff(CID(vk_fence), vx_vk_fence_run);
 }
 
 #endif
@@ -1818,7 +1818,7 @@ Term vx_vk_wait_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_wait_use(void) {
-  io_eff(CID(vk_wait), vx_vk_wait_run, 0);
+  io_eff(CID(vk_wait), vx_vk_wait_run);
 }
 
 #endif
@@ -1847,7 +1847,7 @@ Term vx_vk_submit_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_submit_use(void) {
-  io_eff(CID(vk_submit), vx_vk_submit_run, 0);
+  io_eff(CID(vk_submit), vx_vk_submit_run);
 }
 
 #endif
@@ -1864,7 +1864,7 @@ Term vx_vk_idle_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_vk_idle_use(void) {
-  io_eff(CID(vk_idle), vx_vk_idle_run, 0);
+  io_eff(CID(vk_idle), vx_vk_idle_run);
 }
 
 #endif
@@ -1920,7 +1920,7 @@ Term vx_destroy_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_destroy_use(void) {
-  io_eff(CID(destroy), vx_destroy_run, 0);
+  io_eff(CID(destroy), vx_destroy_run);
 }
 
 #endif
@@ -1934,7 +1934,7 @@ Term vx_stats_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) vx_stats_use(void) {
-  io_eff(CID(stats), vx_stats_run, 0);
+  io_eff(CID(stats), vx_stats_run);
 }
 
 #endif
